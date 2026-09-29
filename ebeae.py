@@ -25,9 +25,7 @@ def initPo(Yo, Ym, initcond, N):
         while index < N - 1:
 
             Pn = Po[:, :index + 1]
-
             num = Yt.T @ Pn
-
             den = (
                 np.linalg.norm(Yt, axis=0)[:, None]
                 * np.linalg.norm(Pn, axis=0)[None, :]
@@ -36,44 +34,26 @@ def initPo(Yo, Ym, initcond, N):
             eps = 1e-12
             e = num / (den + eps)
 
-
             ymax = np.min(np.abs(e), axis=1)
 
-            # Avoid selecting spectra identical to
-            # previously selected endmembers
+            # Avoid selecting spectra identical to previously selected endmembers
             duplicate = np.zeros(
                 Yt.shape[1],
                 dtype=bool
             )
 
             for j in range(index + 1):
-
-                duplicate |= np.all(
-                    Yt == Po[:, j:j + 1],
-                    axis=0
-                )
-
+                duplicate |= np.all(Yt == Po[:, j:j + 1],axis=0)
+            
             ymax[duplicate] = np.inf
-
             IImax = np.argmin(ymax)
-
             Po[:, index + 1] = Yt[:, IImax]
-
-            Yt = np.delete(
-                Yt,
-                IImax,
-                axis=1
-            )
-
+            Yt = np.delete(Yt,IImax,axis=1)
             index += 1
 
     elif initcond == 2:
 
-        energy = np.sum(
-            np.abs(Yo),
-            axis=0
-        )
-
+        energy = np.sum(np.abs(Yo),axis=0)
         Imax = np.argmax(energy)
         Imin = np.argmin(energy)
 
@@ -101,21 +81,10 @@ def initPo(Yo, Ym, initcond, N):
 
             e = num / den
 
-            ymax = np.min(
-                np.abs(e),
-                axis=1
-            )
-
+            ymax = np.min(np.abs(e),axis=1)
             IImax = np.argmin(ymax)
-
             Po[:, index + 1] = Yt[:, IImax]
-
-            Yt = np.delete(
-                Yt,
-                IImax,
-                axis=1
-            )
-
+            Yt = np.delete(Yt,IImax,axis=1)
             index += 1
 
     elif initcond == 3:
@@ -133,14 +102,8 @@ def initPo(Yo, Ym, initcond, N):
 
     elif initcond == 4:
 
-        Yom = np.mean(
-            Ym,
-            axis=1,
-            keepdims=True
-        )
-
+        Yom = np.mean(Ym,axis=1,keepdims=True)
         Yon = Ym - Yom
-
         _, S, V = svd(
             Yon.T,
             full_matrices=False
@@ -193,12 +156,6 @@ def initPo(Yo, Ym, initcond, N):
         )
 
     return Po
-
-
-# ============================================================
-# ABUNDANCE
-# ============================================================
-
 def abundance(Y, P, Lambda, parallel):
 
     if not np.all(np.isfinite(Y)):
@@ -214,22 +171,31 @@ def abundance(Y, P, Lambda, parallel):
     L, K = Y.shape
     N = P.shape[1]
 
-    c = np.ones((N, 1))
+    # ========================================================
+    # Parámetros numéricos
+    # ========================================================
 
-    # --------------------------------------------------------
-    # Common matrices
-    # --------------------------------------------------------
+    eps = 1e-10
+    tol_negative = 1e-10
+    tol_sum = 1e-6
+
+    # ========================================================
+    # Matriz del problema
+    # ========================================================
+
     Go = P.T @ P
+
     if not np.all(np.isfinite(Go)):
         raise ValueError(
             "abundance(): Go contiene NaN o Inf"
         )
 
-    # --------------------------------------------------------
-    # Numerical stability
-    # --------------------------------------------------------
+    # ========================================================
+    # Regularización original
+    # ========================================================
 
     eigvals = np.linalg.eigvalsh(Go)
+
     lmin = np.min(eigvals)
 
     G = (
@@ -237,201 +203,505 @@ def abundance(Y, P, Lambda, parallel):
         - np.eye(N) * lmin * Lambda
     )
 
-    # Small numerical regularization.
-    # Does NOT modify Y or remove zero-valued pixels.
-    eps = 1e-10
+    # ========================================================
+    # Regularización numérica
+    # ========================================================
 
-    G = G + eps * np.eye(N)
+    G = (
+        G
+        + eps * np.eye(N)
+    )
 
-    Gi = np.linalg.inv(G)
+    # ========================================================
+    # Vector de la restricción
+    #
+    #       c^T a = 1
+    # ========================================================
+
+    c = np.ones(N)
+
+    # ========================================================
+    # Inversa de G
+    # ========================================================
+
+    try:
+
+        Gi = np.linalg.inv(G)
+
+    except np.linalg.LinAlgError:
+
+        Gi = np.linalg.pinv(G)
+
+    # ========================================================
+    # Términos comunes
+    # ========================================================
 
     T1 = Gi @ c
-    T2 = c.T @ T1
 
-    # --------------------------------------------------------
-    # Process one block
-    # --------------------------------------------------------
+    T2 = c @ T1
 
-    def process_block(start, end):
+    if abs(T2) < eps:
 
-        Yb = Y[:, start:end]
-
-        # P'Y
-        B = P.T @ Yb
-
-        # ||y_k||^2
-        by = np.sum(
-            Yb ** 2,
-            axis=0
+        raise ValueError(
+            "abundance(): denominador de la restricción "
+            "sum-to-one demasiado pequeño."
         )
 
-        # Unconstrained solution
-        D = (
-            T1.T @ B - 1
-        ) / T2
+    # ========================================================
+    # SOLUCIÓN CON ACTIVE-SET
+    # ========================================================
 
-        Ab = Gi @ (
-            B - c @ D
-        )
+    def solve_constrained_pixel(
+        b,
+        initial_a
+    ):
 
         # ----------------------------------------------------
-        # Pixels with negative abundances
+        # Forzar vectores 1-D
         # ----------------------------------------------------
 
-        negative = np.any(
-            Ab < 0,
-            axis=0
-        )
+        b = np.asarray(
+            b,
+            dtype=float
+        ).reshape(-1)
 
-        for j in np.flatnonzero(negative):
+        a = np.asarray(
+            initial_a,
+            dtype=float
+        ).reshape(-1)
 
-            bk = B[:, [j]]
-            byk = by[j]
-            ak = Ab[:, [j]]
+        # ----------------------------------------------------
+        # Variables activas:
+        #
+        # a_i = 0
+        # ----------------------------------------------------
+
+        active = set()
+
+        # ----------------------------------------------------
+        # Límite de iteraciones
+        # ----------------------------------------------------
+
+        max_iterations = N
+
+        for _ in range(
+            max_iterations
+        ):
+
+            # =================================================
+            # Buscar negativos
+            # =================================================
+
+            negative = np.flatnonzero(
+                a < -tol_negative
+            )
+
+            negative = [
+                i
+                for i in negative
+                if i not in active
+            ]
 
             # ------------------------------------------------
-            # Active-set constrained solution
+            # Ya es factible
             # ------------------------------------------------
 
-            while np.any(ak < 0):
+            if len(negative) == 0:
+                break
 
-                Iset = np.flatnonzero(
-                    ak[:, 0] < 0
+            # ------------------------------------------------
+            # Variable más negativa
+            # ------------------------------------------------
+
+            idx = min(
+                negative,
+                key=lambda i: a[i]
+            )
+
+            # ------------------------------------------------
+            # Fijar a cero
+            # ------------------------------------------------
+
+            active.add(idx)
+
+            # ------------------------------------------------
+            # Variables libres
+            # ------------------------------------------------
+
+            free = [
+                i
+                for i in range(N)
+                if i not in active
+            ]
+
+            # ------------------------------------------------
+            # Caso degenerado
+            # ------------------------------------------------
+
+            if len(free) == 0:
+
+                a[:] = 1.0 / N
+
+                break
+
+            # =================================================
+            # Sistema KKT
+            # =================================================
+
+            nactive = len(active)
+
+            Gamma = np.zeros(
+                (
+                    N + nactive,
+                    N + nactive
                 )
+            )
 
-                if len(Iset) == 0:
-                    break
+            Beta = np.zeros(
+                N + nactive
+            )
 
-                # Remove the most negative abundance
-                i = Iset[
-                    np.argmin(
-                        ak[Iset, 0]
-                    )
-                ]
+            # ------------------------------------------------
+            # Bloque cuadrático
+            # ------------------------------------------------
 
-                # Fix selected abundance to zero
-                active = np.flatnonzero(
-                    ak[:, 0] >= 0
+            Gamma[
+                :N,
+                :N
+            ] = G
+
+            # ------------------------------------------------
+            # Término de la restricción sum-to-one
+            # ------------------------------------------------
+
+            beta_eq = (
+                (
+                    c @ Gi @ b
+                    - 1.0
                 )
+                / T2
+            )
 
-                if len(active) == 0:
-                    break
+            rhs = (
+                b
+                - c * beta_eq
+            )
 
-                Gamma = np.zeros(
-                    (
-                        N + len(active),
-                        N + len(active)
-                    )
-                )
+            Beta[
+                :N
+            ] = rhs
 
-                Beta = np.zeros(
-                    (
-                        N + len(active),
-                        1
-                    )
-                )
+            # ------------------------------------------------
+            # Restricciones activas
+            #
+            #       a_i = 0
+            # ------------------------------------------------
 
-                # --------------------------------------------
-                # Original quadratic system
-                # --------------------------------------------
+            for q, idx_active in enumerate(
+                sorted(active),
+                start=N
+            ):
 
-                Gamma[:N, :N] = G
+                Gamma[
+                    q,
+                    idx_active
+                ] = 1.0
 
-                Beta[:N, :] = (
-                    bk
-                    - c * (
-                        (
-                            c.T
-                            @ Gi
-                            @ bk
-                            - 1
-                        )
-                        / T2
-                    )
-                )
-
-                # --------------------------------------------
-                # Equality constraints
-                # --------------------------------------------
-
-                for q, idx in enumerate(
-                    active,
-                    start=N
-                ):
-
-                    Gamma[
-                        q,
-                        idx
-                    ] = 1
-
-                    Gamma[
-                        idx,
-                        q
-                    ] = 1
+                Gamma[
+                    idx_active,
+                    q
+                ] = 1.0
 
                 Beta[
-                    N:,
-                    0
-                ] = 0
+                    q
+                ] = 0.0
 
-                # --------------------------------------------
-                # Solve
-                # --------------------------------------------
+            # =================================================
+            # Resolver KKT
+            # =================================================
+
+            try:
+
+                solution = np.linalg.solve(
+                    Gamma,
+                    Beta
+                )
+
+            except np.linalg.LinAlgError:
 
                 try:
 
-                    solution = np.linalg.solve(
-                        Gamma,
-                        Beta
+                    solution = (
+                        np.linalg.pinv(Gamma)
+                        @ Beta
                     )
-
-                    ak = solution[
-                        :N,
-                        :
-                    ]
 
                 except np.linalg.LinAlgError:
 
-                    # Fall back to the unconstrained solution
-                    ak = Ab[
-                        :,
-                        j:j + 1
-                    ]
+                    solution = None
 
-                    break
+            # ------------------------------------------------
+            # Fallo del solver
+            # ------------------------------------------------
 
-                # Avoid infinite active-set loops
-                if np.any(
-                    np.isnan(ak)
-                ):
+            if solution is None:
+                break
 
-                    ak = Ab[
-                        :,
-                        j:j + 1
-                    ]
+            solution = np.asarray(
+                solution,
+                dtype=float
+            ).reshape(-1)
 
-                    break
+            a_new = solution[
+                :N
+            ]
 
-                # If the same negative element remains,
-                # set it explicitly to zero
-                if np.any(
-                    ak < 0
-                ):
+            # ------------------------------------------------
+            # Verificar finitud
+            # ------------------------------------------------
 
-                    ak[
-                        ak < 0
-                    ] = 0
+            if not np.all(
+                np.isfinite(a_new)
+            ):
+
+                break
+
+            a = a_new
+
+        # ====================================================
+        # Limpieza numérica
+        # ====================================================
+
+        # Negativos diminutos -> exactamente cero
+        a[
+            (a < 0)
+            & (a >= -tol_negative)
+        ] = 0.0
+
+        # ----------------------------------------------------
+        # Seguridad
+        # ----------------------------------------------------
+
+        a[
+            a < 0
+        ] = 0.0
+
+        # ====================================================
+        # Normalización sum-to-one
+        # ====================================================
+
+        total = np.sum(a)
+
+        if total > eps:
+
+            a /= total
+
+        else:
+
+            # Caso degenerado
+            a[:] = 1.0 / N
+
+        # ====================================================
+        # Limpiar valores muy pequeños
+        # ====================================================
+
+        a[
+            np.abs(a) < tol_negative
+        ] = 0.0
+
+        # ====================================================
+        # Segunda normalización
+        # ====================================================
+
+        total = np.sum(a)
+
+        if total > eps:
+
+            a /= total
+
+        else:
+
+            a[:] = 1.0 / N
+
+        return a
+
+    # ========================================================
+    # PROCESAR BLOQUE
+    # ========================================================
+
+    def process_block(
+        start,
+        end
+    ):
+
+        Yb = Y[
+            :,
+            start:end
+        ]
+
+        # ----------------------------------------------------
+        # P'Y
+        #
+        # B -> (N, Kb)
+        # ----------------------------------------------------
+
+        B = P.T @ Yb
+
+        # ----------------------------------------------------
+        # Solución inicial con sum-to-one
+        #
+        # T1 -> (N,)
+        # B  -> (N,Kb)
+        #
+        # T1 @ B -> (Kb,)
+        # ----------------------------------------------------
+
+        D = (
+            T1 @ B
+            - 1.0
+        ) / T2
+
+        # ----------------------------------------------------
+        # Solución inicial
+        #
+        # D -> (Kb,)
+        #
+        # c[:,None] -> (N,1)
+        #
+        # D[None,:] -> (1,Kb)
+        #
+        # Resultado -> (N,Kb)
+        # ----------------------------------------------------
+
+        Ab = Gi @ (
+            B
+            - c[:, None] * D[None, :]
+        )
+
+        # ====================================================
+        # Detectar píxeles negativos
+        # ====================================================
+
+        negative = np.any(
+            Ab < -tol_negative,
+            axis=0
+        )
+
+        negative_indices = np.flatnonzero(
+            negative
+        )
+
+        # ====================================================
+        # Active-set solamente para píxeles problemáticos
+        # ====================================================
+
+        for j in negative_indices:
 
             Ab[
                 :,
                 j
-            ] = ak[:, 0]
+            ] = solve_constrained_pixel(
+                B[
+                    :,
+                    j
+                ],
+                Ab[
+                    :,
+                    j
+                ]
+            )
+
+        # ====================================================
+        # Limpieza global
+        # ====================================================
+
+        Ab[
+            Ab < 0
+        ] = 0.0
+
+        # ====================================================
+        # Sum-to-one
+        # ====================================================
+
+        sums = np.sum(
+            Ab,
+            axis=0
+        )
+
+        valid = (
+            sums > eps
+        )
+
+        if np.any(valid):
+
+            Ab[
+                :,
+                valid
+            ] /= sums[
+                valid
+            ][None, :]
+
+        # ====================================================
+        # Casos degenerados
+        # ====================================================
+
+        invalid = ~valid
+
+        if np.any(invalid):
+
+            Ab[
+                :,
+                invalid
+            ] = 1.0 / N
+
+        # ====================================================
+        # Limpieza de residuos numéricos
+        # ====================================================
+
+        Ab[
+            np.abs(Ab) < tol_negative
+        ] = 0.0
+
+        # ====================================================
+        # Segunda normalización
+        # ====================================================
+
+        sums = np.sum(
+            Ab,
+            axis=0
+        )
+
+        valid = (
+            sums > eps
+        )
+
+        if np.any(valid):
+
+            Ab[
+                :,
+                valid
+            ] /= sums[
+                valid
+            ][None, :]
+
+        # ----------------------------------------------------
+        # Casos degenerados
+        # ----------------------------------------------------
+
+        invalid = ~valid
+
+        if np.any(invalid):
+
+            Ab[
+                :,
+                invalid
+            ] = 1.0 / N
 
         return Ab
 
-    # --------------------------------------------------------
-    # Block size
-    # --------------------------------------------------------
+    # ========================================================
+    # BLOQUES
+    # ========================================================
 
     block_size = 4096
 
@@ -450,9 +720,9 @@ def abundance(Y, P, Lambda, parallel):
         )
     ]
 
-    # --------------------------------------------------------
-    # Parallel block processing
-    # --------------------------------------------------------
+    # ========================================================
+    # PROCESAMIENTO
+    # ========================================================
 
     if parallel:
 
@@ -477,12 +747,65 @@ def abundance(Y, P, Lambda, parallel):
             for start, end in blocks
         ]
 
+    # ========================================================
+    # UNIR BLOQUES
+    # ========================================================
+
     A = np.hstack(
         results
     )
 
-    return A
+    # ========================================================
+    # VERIFICACIÓN FINITA
+    # ========================================================
 
+    if not np.all(
+        np.isfinite(A)
+    ):
+
+        raise ValueError(
+            "abundance(): A contiene NaN o Inf"
+        )
+
+    # ========================================================
+    # VERIFICACIÓN DE NO NEGATIVIDAD
+    # ========================================================
+
+    min_A = np.min(A)
+
+    if min_A < -1e-8:
+
+        raise ValueError(
+            "abundance(): "
+            "A contiene valores negativos. "
+            f"Min = {min_A}"
+        )
+
+    # ========================================================
+    # VERIFICACIÓN SUM-TO-ONE
+    # ========================================================
+
+    sums = np.sum(
+        A,
+        axis=0
+    )
+
+    if not np.allclose(
+        sums,
+        1.0,
+        atol=tol_sum
+    ):
+
+        raise ValueError(
+            "abundance(): "
+            "La restricción sum-to-one "
+            "no se cumple.\n"
+            f"Min sum = {sums.min()}\n"
+            f"Max sum = {sums.max()}\n"
+            f"Mean sum = {sums.mean()}"
+        )
+
+    return A
 
 # ============================================================
 # ENDMEMBER UPDATE
