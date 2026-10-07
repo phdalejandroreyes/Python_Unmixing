@@ -8,6 +8,9 @@ from Models.residual_transformer import create_model as create_residual_model
 from Models.cross_attention_transformer import (
     create_model as create_cross_attention_model
 )
+from Models.resunet import (
+    create_model as create_resunet_model
+)
 
 
 def test_model(
@@ -24,6 +27,7 @@ def test_model(
     abundance_model_path="abundance_transformer.pth",
     residual_model_path="residual_transformer.pth",
     cross_attention_model_path="cross_attention_transformer.pth",
+    resunet_model_path="resunet.pth",
     device=None
 ):
 
@@ -35,7 +39,8 @@ def test_model(
         "abundance",
         "residual",
         "cross_attention",
-        "mamba"
+        "mamba",
+        "resunet"
     }
 
     if architecture not in valid_architectures:
@@ -75,20 +80,9 @@ def test_model(
     # CONVERTIR A NUMPY
     # ========================================================
 
-    A_initial = np.asarray(
-        A_initial,
-        dtype=np.float32
-    )
-
-    P = np.asarray(
-        P,
-        dtype=np.float32
-    )
-
-    labels = np.asarray(
-        labels,
-        dtype=np.int64
-    )
+    A_initial = np.asarray(A_initial,dtype=np.float32)
+    P = np.asarray(P,dtype=np.float32)
+    labels = np.asarray(labels,dtype=np.int64)
 
     # ========================================================
     # VALIDACIONES
@@ -117,57 +111,31 @@ def test_model(
             f"P debe tener shape (32, 8). "
             f"Shape: {P.shape}"
         )
-
     if A_initial.shape[1] != image_shape[0] * image_shape[1]:
-        raise ValueError(
-            "El número de píxeles de A_initial "
-            "no coincide con image_shape."
-        )
-
+        raise ValueError("El número de píxeles de A_initial no coincide con image_shape.")
     if labels.size != image_shape[0] * image_shape[1]:
-        raise ValueError(
-            "El número de labels no coincide "
-            "con image_shape."
-        )
+        raise ValueError("El número de labels no coincide con image_shape.")
 
     # ========================================================
     # ALINEACIÓN
     #
     # IMPORTANTE:
     #
-    # Se utiliza EXCLUSIVAMENTE el matching obtenido
-    # durante el entrenamiento con la IMAGEN 1.
+    # Se utiliza EXCLUSIVAMENTE el matching obtenido, durante el entrenamiento con la IMAGEN 1.
     #
     # NO se calcula Hungarian nuevamente para Imagen 2.
     # ========================================================
 
     print()
-    print(
-        "Alineando abundancias y endmembers "
-        "con el matching de TRAIN..."
-    )
+    print("Alineando abundancias y endmembers con el matching de TRAIN...")
 
-    A_aligned = np.zeros_like(
-        A_initial,
-        dtype=np.float32
-    )
+    A_aligned = np.zeros_like(A_initial,dtype=np.float32)
+    P_aligned = np.zeros_like(P,dtype=np.float32)
 
-    P_aligned = np.zeros_like(
-        P,
-        dtype=np.float32
-    )
-
-    for row, col in zip(
-        train_row_ind,
-        train_col_ind
-    ):
-
+    for row, col in zip(train_row_ind,train_col_ind):
         A_aligned[col, :] = A_initial[row, :]
         P_aligned[:, col] = P[:, row]
-
-        print(
-            f"Endmember {row} -> clase {col}"
-        )
+        print(f"Endmember {row} -> clase {col}")
 
     print()
     print("Alineación completada.")
@@ -185,11 +153,8 @@ def test_model(
     # ========================================================
 
     if architecture == "mamba":
-
         mamba_batch_size = 32
-
     else:
-
         mamba_batch_size = batch_size
 
     # ========================================================
@@ -297,7 +262,24 @@ def test_model(
             )
 
             model_path = cross_attention_model_path
+        # ----------------------------------------------------
+        # RES-U-NET
+        # ----------------------------------------------------
 
+        elif architecture == "resunet":
+
+            print()
+            print("=" * 60)
+            print(" CARGANDO RES-U-NET")
+            print("=" * 60)
+
+            model = create_resunet_model(
+                n_endmembers=8,
+                n_classes=8,
+                device=device
+            )
+
+            model_path = resunet_model_path
         # ----------------------------------------------------
         # CARGAR PESOS
         # ----------------------------------------------------
@@ -349,26 +331,16 @@ def test_model(
             # ------------------------------------------------
 
             if architecture == "cross_attention":
-
-                logits = model(
-                    X,
-                    endmembers_tensor
-                )
-
+                logits = model(X,endmembers_tensor)
             else:
-
                 logits = model(X)
 
             # ------------------------------------------------
             # PREDICCIÓN
             # ------------------------------------------------
-
-            predictions = torch.argmax(
-                logits,
-                dim=1
-            )
-            # Mantiene el mismo esquema de reconstrucción utilizado
-            # en la inferencia de Mamba.
+            predictions = torch.argmax(logits,dim=1)
+        
+            # Mantiene el mismo esquema de reconstrucción utilizado en la inferencia de Mamba.
 
             if architecture == "mamba":
 
@@ -379,13 +351,8 @@ def test_model(
                 # Guardamos temporalmente las predicciones
                 # para reconstruir el mapa después.
                 if patch_index == 0:
-
                     mamba_predictions = []
-
-                mamba_predictions.append(
-                    predictions_numpy
-                )
-
+                mamba_predictions.append(predictions_numpy)
                 patch_index += X.shape[0]
 
             # ------------------------------------------------
@@ -393,13 +360,8 @@ def test_model(
             # ------------------------------------------------
 
             else:
-
                 for i in range(X.shape[0]):
-
-                    row, col = dataset.patch_coordinates[
-                        patch_index
-                    ]
-
+                    row, col = dataset.patch_coordinates[patch_index]
                     prediction_map[
                         row:row + patch_size,
                         col:col + patch_size
@@ -419,26 +381,15 @@ def test_model(
         )
 
         print()
-        print(
-            "Predicciones por parche:",
-            predictions.shape
-        )
-
+        print("Predicciones por parche:",predictions.shape)
         H, W = image_shape
-
         patches_per_row = H // patch_size
         patches_per_col = W // patch_size
-
-        expected_patches = (
-            patches_per_row *
-            patches_per_col
-        )
+        expected_patches = (patches_per_row *patches_per_col)
 
         if predictions.shape[0] != expected_patches:
-
             raise ValueError(
-                "El número de predicciones no coincide "
-                "con el número esperado de parches. "
+                "El número de predicciones no coincide con el número esperado de parches. "
                 f"Predicciones: {predictions.shape[0]}, "
                 f"esperadas: {expected_patches}"
             )
@@ -451,25 +402,11 @@ def test_model(
         index = 0
 
         for i in range(patches_per_row):
-
             for j in range(patches_per_col):
-
-                row_start = (
-                    i * patch_size
-                )
-
-                row_end = (
-                    row_start + patch_size
-                )
-
-                col_start = (
-                    j * patch_size
-                )
-
-                col_end = (
-                    col_start + patch_size
-                )
-
+                row_start = (i * patch_size)
+                row_end = (row_start + patch_size)
+                col_start = (j * patch_size)
+                col_end = (col_start + patch_size)
                 prediction_map[
                     row_start:row_end,
                     col_start:col_end
@@ -495,25 +432,12 @@ def test_model(
     print()
     print("Arquitectura:", architecture)
 
-    if isinstance(
-        prediction_map,
-        torch.Tensor
-    ):
-
-        unique_predictions = torch.unique(
-            prediction_map
-        )
-
+    if isinstance(prediction_map,torch.Tensor):
+        unique_predictions = torch.unique(prediction_map)
     else:
+        unique_predictions = np.unique(prediction_map)
 
-        unique_predictions = np.unique(
-            prediction_map
-        )
-
-    print(
-        "Clases predichas:",
-        unique_predictions
-    )
+    print("Clases predichas:",unique_predictions)
 
     return (
         prediction_map.numpy()

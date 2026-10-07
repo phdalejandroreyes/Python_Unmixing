@@ -9,7 +9,7 @@ from Models.abundance_transformer import create_model
 from Models.residual_transformer import create_model as create_residual_model
 from Models.cross_attention_transformer import create_model as create_cross_attention_model
 from Models.mamba_transformer import create_model as create_mamba_model
-
+from Models.resunet import create_model as create_resunet_model
 
 # ============================================================
 # CONFIGURACIÓN ESPECÍFICA DE MAMBA
@@ -202,12 +202,12 @@ def train_model(
     # ========================================================
     # ARQUITECTURAS VÁLIDAS
     # ========================================================
-
     valid_architectures = {
         "abundance",
         "residual",
         "cross_attention",
-        "mamba"
+        "mamba",
+        "resunet"
     }
 
     if architecture not in valid_architectures:
@@ -241,20 +241,9 @@ def train_model(
     # CONVERSIÓN DE DATOS
     # ========================================================
 
-    A_initial = np.asarray(
-        A_initial,
-        dtype=np.float32
-    )
-
-    P = np.asarray(
-        P,
-        dtype=np.float32
-    )
-
-    labels = np.asarray(
-        labels,
-        dtype=np.int64
-    )
+    A_initial = np.asarray(A_initial,dtype=np.float32)
+    P = np.asarray(P,dtype=np.float32)
+    labels = np.asarray(labels,dtype=np.int64)
 
     # ========================================================
     # VALIDACIÓN DE DIMENSIONES
@@ -303,15 +292,8 @@ def train_model(
     # ALINEACIÓN SEGÚN EL MATCHING DE ENTRENAMIENTO
     # ========================================================
 
-    A_aligned = np.zeros_like(
-        A_initial,
-        dtype=np.float32
-    )
-
-    P_aligned = np.zeros_like(
-        P,
-        dtype=np.float32
-    )
+    A_aligned = np.zeros_like(A_initial,dtype=np.float32)
+    P_aligned = np.zeros_like(P,dtype=np.float32)
 
     for row, col in zip(
         train_row_ind,
@@ -404,34 +386,17 @@ def train_model(
         # DATASET Y DATALOADER
         # ----------------------------------------------------
 
-        X_tensor = torch.from_numpy(
-            X_patches
-        )
-
-        y_tensor = torch.from_numpy(
-            y_patches
-        )
-
-        train_dataset = TensorDataset(
-            X_tensor,
-            y_tensor
-        )
-
+        X_tensor = torch.from_numpy(X_patches)
+        y_tensor = torch.from_numpy(y_patches)
+        train_dataset = TensorDataset(X_tensor,y_tensor)
         train_loader = DataLoader(
             train_dataset,
             batch_size=mamba_batch_size,
             shuffle=True
         )
 
-        print(
-            "Batch size:",
-            mamba_batch_size
-        )
-
-        print(
-            "Número de batches:",
-            len(train_loader)
-        )
+        print("Batch size:",mamba_batch_size)
+        print("Número de batches:",len(train_loader))
 
         # ----------------------------------------------------
         # MODELO
@@ -507,31 +472,11 @@ def train_model(
                     print(" DIAGNÓSTICO PRIMER BATCH")
                     print("=" * 70)
 
-                    print(
-                        "Input:",
-                        X.shape
-                    )
-
-                    print(
-                        "Labels:",
-                        y.shape
-                    )
-
-                    print(
-                        "Logits:",
-                        logits.shape
-                    )
-
-                    print(
-                        "Logits min:",
-                        logits.min().item()
-                    )
-
-                    print(
-                        "Logits max:",
-                        logits.max().item()
-                    )
-
+                    print("Input:",X.shape)
+                    print("Labels:",y.shape)
+                    print("Logits:",logits.shape)
+                    print("Logits min:",logits.min().item())
+                    print("Logits max:",logits.max().item())
                     print(
                         "Logits mean:",
                         logits.mean().item()
@@ -683,17 +628,24 @@ def train_model(
         )
 
     elif architecture == "cross_attention":
-
         model = create_cross_attention_model(
             n_endmembers=8,
             n_classes=8,
             spectral_bands=32,
             device=device
         )
-
         output_filename = (
             "cross_attention_transformer.pth"
         )
+
+    elif architecture == "resunet":
+        model = create_resunet_model(
+            n_endmembers=8,
+            n_classes=8,
+            device=device
+        )
+
+        output_filename = "resunet.pth"
 
     # ========================================================
     # LOSS Y OPTIMIZADOR

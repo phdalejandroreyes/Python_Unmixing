@@ -10,7 +10,8 @@ from train import train_model
 from inference import test_model
 
 
-ARCHITECTURE = "mamba"
+ARCHITECTURE = "resunet"
+#ARCHITECTURE = "mamba"
 #ARCHITECTURE = "abundance"
 #ARCHITECTURE = "residual"
 #ARCHITECTURE = "cross_attention"
@@ -141,7 +142,6 @@ print()
 print("=" * 60)
 print(f"ENTRENANDO {ARCHITECTURE.upper()} TRANSFORMER")
 print("=" * 60)
-
 A_initial = A
 model = train_model(
 
@@ -151,7 +151,8 @@ model = train_model(
     train_row_ind=train_row_ind,
     train_col_ind=train_col_ind,
     image_shape=imagen.shape[:2],
-    architecture=ARCHITECTURE
+    architecture=ARCHITECTURE,
+    device="cpu"
 )
 
 print()
@@ -291,8 +292,6 @@ print("=" * 60)
 print(f"EVALUANDO {ARCHITECTURE.upper()} TRANSFORMER")
 print("=" * 60)
 
-A_initial = A
-
 prediction_map = test_model(
     A_initial=A_initial,
     P=P,
@@ -301,7 +300,8 @@ prediction_map = test_model(
     train_col_ind=train_col_ind,
     image_shape=imagen.shape[:2],
     architecture=ARCHITECTURE,
-    model=model
+    model=model,
+    device="cpu"
 )
 
 
