@@ -1,8 +1,7 @@
 import numpy as np
 from scipy.linalg import pinv, svd, sqrtm
 from joblib import Parallel, delayed
-from endmember_extraction import vca, SVMAX, NFINDR
-
+from unmixing.endmember_extraction import vca, SVMAX, NFINDR
 
 # ============================================================
 # INITIALIZATION
