@@ -1,3 +1,7 @@
+# Resultados y hojas de cálculo
+results/
+Results/
+Evaluation/results/
 __pycache__/
 *.pyc
 .DS_Store

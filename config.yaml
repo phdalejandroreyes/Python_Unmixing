@@ -1,0 +1,28 @@
+project:
+  name: "Python_Unmixing"
+
+# Desmezclado espectral
+unmixing:
+  method: "ebeae"
+  n_endmembers: 7
+  extra_class: true
+
+# Clasificación
+classification:
+  architecture: "mamba"
+  n_classes: 8
+
+# Entrenamiento
+training:
+  patch_size: 32
+  batch_size: 4
+  epochs: 20
+  learning_rate: 0.0001
+
+# Datos
+data:
+  spectral_bands: 32
+
+# Hardware
+hardware:
+  device: "cpu"

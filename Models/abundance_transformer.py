@@ -151,8 +151,8 @@ class AbundanceTransformer(nn.Module):
         #
         #   8 x 8 → 16 x 16
         #
-        # Segunda:
         #
+        # Segunda:
         #   16 x 16 → 32 x 32
         #
         # Salida:
@@ -181,9 +181,7 @@ class AbundanceTransformer(nn.Module):
             ),
 
             nn.BatchNorm2d(32),
-
             nn.GELU(),
-
             nn.Conv2d(
                 32,
                 n_classes,
