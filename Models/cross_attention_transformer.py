@@ -86,21 +86,16 @@ class EndmemberEmbedding(nn.Module):
         super().__init__()
 
         self.embedding = nn.Sequential(
-
             nn.Linear(
                 spectral_bands,
                 embed_dim
             ),
-
             nn.LayerNorm(embed_dim),
-
             nn.GELU(),
-
             nn.Linear(
                 embed_dim,
                 embed_dim
             ),
-
             nn.LayerNorm(embed_dim)
         )
 
@@ -412,13 +407,13 @@ class CrossAttentionTransformer(nn.Module):
         # POSICIÓN
         # ----------------------------------------------------
 
-        spatial_tokens = (
-            spatial_tokens
-            +
-            self.positional_embedding[
-                :, :spatial_tokens.shape[1], :
-            ]
-        )
+        #spatial_tokens = (
+        #    spatial_tokens
+        #    +
+        #    self.positional_embedding[
+        #        :, :spatial_tokens.shape[1], :
+        #    ]
+        #)
 
         # ----------------------------------------------------
         # TRANSFORMER ESPACIAL

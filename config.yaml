@@ -1,3 +1,4 @@
+
 project:
   name: "Python_Unmixing"
 
@@ -9,19 +10,23 @@ unmixing:
 
 # Clasificación
 classification:
-  architecture: "mamba"
+  architecture: "residual"
   n_classes: 8
 
 # Entrenamiento
 training:
   patch_size: 32
   batch_size: 4
-  epochs: 20
-  learning_rate: 0.0001
+  epochs: 100
+  learning_rate: 0.001
 
 # Datos
 data:
   spectral_bands: 32
+  train_image: "Satelital/images/201912_1.tif"
+  train_labels: "Satelital/labels/201912_1.tif"
+  test_image: "Satelital/images/201912_9.tif"
+  test_labels: "Satelital/labels/201912_9.tif"
 
 # Hardware
 hardware:

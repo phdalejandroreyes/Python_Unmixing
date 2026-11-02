@@ -1,31 +1,17 @@
+
 # ============================================================
 # mamba_transformer.py
 #
 # SELECTIVE SSM / MAMBA PARA ABUNDANCE MAPPING
 #
-# Versión:
-#   PyTorch puro
+# Implementacion PyTorch puro.
 #
-# Diseñada para:
-#   - CPU
-#   - Apple Silicon / MPS
-#   - NVIDIA / CUDA
+# Las abundancias son obligatorias como conexion residual:
 #
-# NO requiere:
-#   - mamba-ssm
-#   - CUDA
-#   - nvcc
-#   - causal-conv1d
+# logits = log(abundances_normalizadas + eps) + delta_logits
 #
-# IMPORTANTE:
-#
-# Esta implementación reproduce el PRINCIPIO de un
-# Selective State Space Model utilizado por Mamba,
-# pero no es la implementación CUDA optimizada oficial
-# de mamba-ssm.
-#
+# No requiere mamba-ssm, CUDA ni causal-conv1d.
 # ============================================================
-
 
 import torch
 import torch.nn as nn
@@ -37,13 +23,10 @@ import torch.nn.functional as F
 # ============================================================
 
 def get_device():
-
     if torch.cuda.is_available():
-
         return torch.device("cuda")
 
     if torch.backends.mps.is_available():
-
         return torch.device("mps")
 
     return torch.device("cpu")
@@ -55,21 +38,8 @@ def get_device():
 
 class AbundancePatchEmbedding(nn.Module):
     """
-    Convierte mapas de abundancia en tokens espaciales.
-
-    Entrada:
-        (B, N, 32, 32)
-
-    Salida:
-        (B, D, 8, 8)
-
-    Con patch_size = 4:
-
-        32 / 4 = 8
-
-    Por tanto:
-
-        8 x 8 = 64 tokens
+    Entrada: (B, N, 32, 32)
+    Salida:  (B, D, 8, 8), con patch_size=4.
     """
 
     def __init__(
@@ -78,7 +48,6 @@ class AbundancePatchEmbedding(nn.Module):
         embed_dim=128,
         patch_size=4
     ):
-
         super().__init__()
 
         self.n_endmembers = n_endmembers
@@ -92,19 +61,12 @@ class AbundancePatchEmbedding(nn.Module):
             stride=patch_size
         )
 
-        self.norm = nn.BatchNorm2d(
-            embed_dim
-        )
+        self.norm = nn.BatchNorm2d(embed_dim)
 
     def forward(self, x):
-
         x = self.proj(x)
-
         x = self.norm(x)
-
-        x = F.gelu(x)
-
-        return x
+        return F.gelu(x)
 
 
 # ============================================================
@@ -112,35 +74,20 @@ class AbundancePatchEmbedding(nn.Module):
 # ============================================================
 
 class SpatialPositionalEmbedding(nn.Module):
-    """
-    Positional embedding aprendido.
-
-    Para 32x32 con patch_size=4:
-
-        grid = 8x8
-        tokens = 64
-    """
+    """Positional embedding espacial aprendido."""
 
     def __init__(
         self,
         grid_size=8,
         embed_dim=128
     ):
-
         super().__init__()
 
         self.grid_size = grid_size
-
-        self.num_tokens = (
-            grid_size * grid_size
-        )
+        self.num_tokens = grid_size * grid_size
 
         self.embedding = nn.Parameter(
-            torch.zeros(
-                1,
-                self.num_tokens,
-                embed_dim
-            )
+            torch.zeros(1, self.num_tokens, embed_dim)
         )
 
         nn.init.normal_(
@@ -150,6 +97,11 @@ class SpatialPositionalEmbedding(nn.Module):
         )
 
     def forward(self, x):
+        if x.shape[1] != self.num_tokens:
+            raise ValueError(
+                f"Se esperaban {self.num_tokens} tokens; "
+                f"se recibieron {x.shape[1]}."
+            )
 
         return x + self.embedding
 
@@ -160,38 +112,12 @@ class SpatialPositionalEmbedding(nn.Module):
 
 class SelectiveSSM(nn.Module):
     """
-    Implementación PyTorch pura de un Selective State Space Model.
+    Implementacion recurrente de un Selective State Space Model.
 
-    Entrada:
+    Entrada y salida: (B, L, D).
 
-        (B, L, D)
-
-    Salida:
-
-        (B, L, D)
-
-    El estado se actualiza secuencialmente:
-
-        h_t =
-            A_t * h_{t-1}
-            +
-            B_t * x_t
-
-        y_t =
-            C_t * h_t
-            +
-            D * x_t
-
-    La selección depende de la entrada:
-
-        dt = f(x)
-
-        B  = f(x)
-
-        C  = f(x)
-
-    Esto es lo que permite que el estado sea
-    dependiente de la entrada.
+    Esta version es PyTorch puro y no es el kernel optimizado
+    oficial de Mamba.
     """
 
     def __init__(
@@ -201,57 +127,20 @@ class SelectiveSSM(nn.Module):
         dt_rank=8,
         dropout=0.0
     ):
-
         super().__init__()
 
         self.dim = dim
         self.state_dim = state_dim
         self.dt_rank = dt_rank
 
-        # ----------------------------------------------------
-        # Proyección para dt
-        # ----------------------------------------------------
-
         self.dt_proj = nn.Sequential(
-
-            nn.Linear(
-                dim,
-                dt_rank
-            ),
-
+            nn.Linear(dim, dt_rank),
             nn.GELU(),
-
-            nn.Linear(
-                dt_rank,
-                dim
-            )
+            nn.Linear(dt_rank, dim)
         )
 
-        # ----------------------------------------------------
-        # B(x)
-        # ----------------------------------------------------
-
-        self.B_proj = nn.Linear(
-            dim,
-            state_dim
-        )
-
-        # ----------------------------------------------------
-        # C(x)
-        # ----------------------------------------------------
-
-        self.C_proj = nn.Linear(
-            dim,
-            state_dim
-        )
-
-        # ----------------------------------------------------
-        # A
-        #
-        # Queremos A < 0 para estabilidad.
-        #
-        # A = -exp(log_A)
-        # ----------------------------------------------------
+        self.B_proj = nn.Linear(dim, state_dim)
+        self.C_proj = nn.Linear(dim, state_dim)
 
         self.log_A = nn.Parameter(
             torch.log(
@@ -259,143 +148,51 @@ class SelectiveSSM(nn.Module):
                     1,
                     state_dim + 1,
                     dtype=torch.float32
-                )
-                .unsqueeze(0)
-                .repeat(
-                    dim,
-                    1
-                )
+                ).unsqueeze(0).repeat(dim, 1)
             )
         )
 
-        # ----------------------------------------------------
-        # D
-        #
-        # Conexión directa.
-        # ----------------------------------------------------
-
-        self.D = nn.Parameter(
-            torch.ones(dim)
-        )
-
-        # ----------------------------------------------------
-        # Output projection
-        # ----------------------------------------------------
-
-        self.out_proj = nn.Linear(
-            dim,
-            dim
-        )
-
-        self.dropout = nn.Dropout(
-            dropout
-        )
+        self.D = nn.Parameter(torch.ones(dim))
+        self.out_proj = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
 
         self._initialize_weights()
 
     def _initialize_weights(self):
+        for module in (
+            self.dt_proj[0],
+            self.dt_proj[2],
+            self.B_proj,
+            self.C_proj,
+            self.out_proj
+        ):
+            nn.init.xavier_uniform_(
+                module.weight,
+                gain=0.5
+            )
 
-        nn.init.xavier_uniform_(
-            self.dt_proj[0].weight,
-            gain=0.5
-        )
-
-        nn.init.zeros_(
-            self.dt_proj[0].bias
-        )
-
-        nn.init.xavier_uniform_(
-            self.dt_proj[2].weight,
-            gain=0.5
-        )
-
-        nn.init.zeros_(
-            self.dt_proj[2].bias
-        )
-
-        nn.init.xavier_uniform_(
-            self.B_proj.weight,
-            gain=0.5
-        )
-
-        nn.init.zeros_(
-            self.B_proj.bias
-        )
-
-        nn.init.xavier_uniform_(
-            self.C_proj.weight,
-            gain=0.5
-        )
-
-        nn.init.zeros_(
-            self.C_proj.bias
-        )
-
-        nn.init.xavier_uniform_(
-            self.out_proj.weight,
-            gain=0.5
-        )
-
-        nn.init.zeros_(
-            self.out_proj.bias
-        )
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def forward(self, x):
+        batch_size, seq_len, dim = x.shape
 
-        B, L, D = x.shape
+        if dim != self.dim:
+            raise ValueError(
+                f"Dimension esperada {self.dim}; recibida {dim}."
+            )
 
-        # ----------------------------------------------------
-        # dt
-        # ----------------------------------------------------
+        dt = F.softplus(self.dt_proj(x))
+        dt = torch.clamp(dt, min=1e-4, max=1.0)
 
-        dt = self.dt_proj(x)
+        B_t = torch.tanh(self.B_proj(x))
+        C_t = torch.tanh(self.C_proj(x))
 
-        dt = F.softplus(
-            dt
-        )
-
-        # Limitar dt para evitar inestabilidad
-        dt = torch.clamp(
-            dt,
-            min=1e-4,
-            max=1.0
-        )
-
-        # ----------------------------------------------------
-        # B(x)
-        # ----------------------------------------------------
-
-        B_t = torch.tanh(
-            self.B_proj(x)
-        )
-
-        # ----------------------------------------------------
-        # C(x)
-        # ----------------------------------------------------
-
-        C_t = torch.tanh(
-            self.C_proj(x)
-        )
-
-        # ----------------------------------------------------
-        # A
-        #
-        # A siempre negativo.
-        # ----------------------------------------------------
-
-        A = -torch.exp(
-            self.log_A
-        )
-
-        # ----------------------------------------------------
-        # Estado inicial
-        #
-        # (B, D, state_dim)
-        # ----------------------------------------------------
+        A = -torch.exp(self.log_A)
 
         state = torch.zeros(
-            B,
-            D,
+            batch_size,
+            dim,
             self.state_dim,
             device=x.device,
             dtype=x.dtype
@@ -403,42 +200,15 @@ class SelectiveSSM(nn.Module):
 
         outputs = []
 
-        # ----------------------------------------------------
-        # Recurrencia
-        #
-        # Se mantiene explícitamente en Python para:
-        #
-        # - compatibilidad MPS
-        # - evitar CUDA
-        # - facilitar diagnóstico
-        #
-        # No es tan rápida como un kernel Mamba optimizado.
-        # ----------------------------------------------------
-
-        for t in range(L):
-
+        for t in range(seq_len):
             x_t = x[:, t, :]
-
             dt_t = dt[:, t, :]
-
             B_current = B_t[:, t, :]
-
             C_current = C_t[:, t, :]
 
-            # ------------------------------------------------
-            # discretización simple:
-            #
-            # A_bar = exp(dt * A)
-            # ------------------------------------------------
-
             A_bar = torch.exp(
-                dt_t.unsqueeze(-1)
-                * A.unsqueeze(0)
+                dt_t.unsqueeze(-1) * A.unsqueeze(0)
             )
-
-            # ------------------------------------------------
-            # input contribution
-            # ------------------------------------------------
 
             input_term = (
                 dt_t.unsqueeze(-1)
@@ -446,53 +216,21 @@ class SelectiveSSM(nn.Module):
                 * x_t.unsqueeze(-1)
             )
 
-            # ------------------------------------------------
-            # estado
-            # ------------------------------------------------
-
-            state = (
-                A_bar * state
-                +
-                input_term
-            )
-
-            # ------------------------------------------------
-            # salida
-            # ------------------------------------------------
+            state = A_bar * state + input_term
 
             y_t = (
                 torch.sum(
-                    C_current.unsqueeze(1)
-                    * state,
+                    C_current.unsqueeze(1) * state,
                     dim=-1
                 )
-                +
-                self.D.unsqueeze(0)
-                * x_t
+                + self.D.unsqueeze(0) * x_t
             )
 
-            outputs.append(
-                y_t.unsqueeze(1)
-            )
+            outputs.append(y_t.unsqueeze(1))
 
-        # ----------------------------------------------------
-        # Sequence
-        # ----------------------------------------------------
-
-        y = torch.cat(
-            outputs,
-            dim=1
-        )
-
-        y = self.out_proj(
-            y
-        )
-
-        y = self.dropout(
-            y
-        )
-
-        return y
+        y = torch.cat(outputs, dim=1)
+        y = self.out_proj(y)
+        return self.dropout(y)
 
 
 # ============================================================
@@ -500,18 +238,7 @@ class SelectiveSSM(nn.Module):
 # ============================================================
 
 class BidirectionalSelectiveSSM(nn.Module):
-    """
-    Procesa los tokens:
-
-        izquierda -> derecha
-
-    y también:
-
-        derecha -> izquierda
-
-    Esto es especialmente útil para imágenes porque la
-    secuencia rasterizada introduce una dirección artificial.
-    """
+    """Procesa la secuencia en ambos sentidos."""
 
     def __init__(
         self,
@@ -520,7 +247,6 @@ class BidirectionalSelectiveSSM(nn.Module):
         dt_rank=8,
         dropout=0.1
     ):
-
         super().__init__()
 
         self.forward_ssm = SelectiveSSM(
@@ -537,56 +263,21 @@ class BidirectionalSelectiveSSM(nn.Module):
             dropout=dropout
         )
 
-        self.output_projection = nn.Linear(
-            dim * 2,
-            dim
-        )
+        self.output_projection = nn.Linear(dim * 2, dim)
 
     def forward(self, x):
+        y_forward = self.forward_ssm(x)
 
-        # ----------------------------------------------------
-        # Forward
-        # ----------------------------------------------------
-
-        y_forward = self.forward_ssm(
-            x
-        )
-
-        # ----------------------------------------------------
-        # Backward
-        # ----------------------------------------------------
-
-        x_reverse = torch.flip(
-            x,
-            dims=[1]
-        )
-
-        y_backward = self.backward_ssm(
-            x_reverse
-        )
-
-        y_backward = torch.flip(
-            y_backward,
-            dims=[1]
-        )
-
-        # ----------------------------------------------------
-        # Combinar
-        # ----------------------------------------------------
+        x_reverse = torch.flip(x, dims=[1])
+        y_backward = self.backward_ssm(x_reverse)
+        y_backward = torch.flip(y_backward, dims=[1])
 
         y = torch.cat(
-            [
-                y_forward,
-                y_backward
-            ],
+            [y_forward, y_backward],
             dim=-1
         )
 
-        y = self.output_projection(
-            y
-        )
-
-        return y
+        return self.output_projection(y)
 
 
 # ============================================================
@@ -603,12 +294,9 @@ class MambaBlock(nn.Module):
         dropout=0.1,
         mlp_ratio=2
     ):
-
         super().__init__()
 
-        self.norm1 = nn.LayerNorm(
-            dim
-        )
+        self.norm1 = nn.LayerNorm(dim)
 
         self.ssm = BidirectionalSelectiveSSM(
             dim=dim,
@@ -617,71 +305,21 @@ class MambaBlock(nn.Module):
             dropout=dropout
         )
 
-        self.norm2 = nn.LayerNorm(
-            dim
-        )
+        self.norm2 = nn.LayerNorm(dim)
 
-        hidden_dim = int(
-            dim * mlp_ratio
-        )
+        hidden_dim = int(dim * mlp_ratio)
 
         self.mlp = nn.Sequential(
-
-            nn.Linear(
-                dim,
-                hidden_dim
-            ),
-
+            nn.Linear(dim, hidden_dim),
             nn.GELU(),
-
-            nn.Dropout(
-                dropout
-            ),
-
-            nn.Linear(
-                hidden_dim,
-                dim
-            ),
-
-            nn.Dropout(
-                dropout
-            )
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
-
-        # ----------------------------------------------------
-        # SSM residual
-        # ----------------------------------------------------
-
-        residual = x
-
-        x = self.norm1(
-            x
-        )
-
-        x = self.ssm(
-            x
-        )
-
-        x = residual + x
-
-        # ----------------------------------------------------
-        # MLP residual
-        # ----------------------------------------------------
-
-        residual = x
-
-        x = self.norm2(
-            x
-        )
-
-        x = self.mlp(
-            x
-        )
-
-        x = residual + x
-
+        x = x + self.ssm(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
         return x
 
 
@@ -699,36 +337,25 @@ class VisionMamba(nn.Module):
         dt_rank=8,
         dropout=0.1
     ):
-
         super().__init__()
 
-        self.blocks = nn.ModuleList(
-            [
-                MambaBlock(
-                    dim=dim,
-                    state_dim=state_dim,
-                    dt_rank=dt_rank,
-                    dropout=dropout
-                )
-                for _ in range(depth)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            MambaBlock(
+                dim=dim,
+                state_dim=state_dim,
+                dt_rank=dt_rank,
+                dropout=dropout
+            )
+            for _ in range(depth)
+        ])
 
-        self.norm = nn.LayerNorm(
-            dim
-        )
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-
         for block in self.blocks:
-
             x = block(x)
 
-        x = self.norm(
-            x
-        )
-
-        return x
+        return self.norm(x)
 
 
 # ============================================================
@@ -742,27 +369,17 @@ class MambaDecoder(nn.Module):
         embed_dim=128,
         n_classes=8
     ):
-
         super().__init__()
 
         self.decoder = nn.Sequential(
-
-            # 8 -> 16
-
             nn.ConvTranspose2d(
                 embed_dim,
                 64,
                 kernel_size=2,
                 stride=2
             ),
-
-            nn.BatchNorm2d(
-                64
-            ),
-
+            nn.BatchNorm2d(64),
             nn.GELU(),
-
-            # 16 -> 32
 
             nn.ConvTranspose2d(
                 64,
@@ -770,14 +387,8 @@ class MambaDecoder(nn.Module):
                 kernel_size=2,
                 stride=2
             ),
-
-            nn.BatchNorm2d(
-                32
-            ),
-
+            nn.BatchNorm2d(32),
             nn.GELU(),
-
-            # clasificación
 
             nn.Conv2d(
                 32,
@@ -787,10 +398,7 @@ class MambaDecoder(nn.Module):
         )
 
     def forward(self, x):
-
-        return self.decoder(
-            x
-        )
+        return self.decoder(x)
 
 
 # ============================================================
@@ -798,6 +406,17 @@ class MambaDecoder(nn.Module):
 # ============================================================
 
 class MambaTransformer(nn.Module):
+    """
+    Clasificador de mapas de abundancias.
+
+    La conexión residual de abundancias es obligatoria.
+
+    logits = log(base_abundances + eps) + delta_logits
+
+    Requiere n_endmembers == n_classes porque cada canal
+    de abundancia debe corresponder al canal de clase
+    alineado utilizado por la clasificación.
+    """
 
     def __init__(
         self,
@@ -809,10 +428,8 @@ class MambaTransformer(nn.Module):
         depth=3,
         state_dim=16,
         dt_rank=8,
-        dropout=0.1,
-        use_abundance_prior=True
+        dropout=0.1
     ):
-
         super().__init__()
 
         self.n_endmembers = n_endmembers
@@ -820,64 +437,46 @@ class MambaTransformer(nn.Module):
         self.image_size = image_size
         self.embed_dim = embed_dim
         self.patch_size = patch_size
-        self.use_abundance_prior = (
-            use_abundance_prior
-        )
 
         # ----------------------------------------------------
         # Validaciones
         # ----------------------------------------------------
 
         if image_size % patch_size != 0:
-
             raise ValueError(
-                "image_size debe ser divisible "
-                "por patch_size"
+                "image_size debe ser divisible por patch_size."
             )
 
-        if use_abundance_prior:
-
-            if n_endmembers != n_classes:
-
-                raise ValueError(
-                    "El abundance prior requiere "
-                    "n_endmembers == n_classes"
-                )
+        if n_endmembers != n_classes:
+            raise ValueError(
+                "La conexion residual de abundancias requiere "
+                "n_endmembers == n_classes."
+            )
 
         # ----------------------------------------------------
-        # Grid
+        # Grid y tokens
         # ----------------------------------------------------
 
-        self.grid_size = (
-            image_size // patch_size
-        )
-
-        self.num_tokens = (
-            self.grid_size
-            * self.grid_size
-        )
+        self.grid_size = image_size // patch_size
+        self.num_tokens = self.grid_size ** 2
 
         # ----------------------------------------------------
         # Patch embedding
         # ----------------------------------------------------
 
-        self.patch_embed = (
-            AbundancePatchEmbedding(
-                n_endmembers=n_endmembers,
-                embed_dim=embed_dim,
-                patch_size=patch_size
-            )
+        self.patch_embed = AbundancePatchEmbedding(
+            n_endmembers=n_endmembers,
+            embed_dim=embed_dim,
+            patch_size=patch_size
         )
 
         # ----------------------------------------------------
-        # Posición
+        # Posicion
         # ----------------------------------------------------
 
-        self.positional_embedding = (
-            SpatialPositionalEmbedding(
-                grid_size=self.grid_size,
-                embed_dim=embed_dim
-            )
+        self.positional_embedding = SpatialPositionalEmbedding(
+            grid_size=self.grid_size,
+            embed_dim=embed_dim
         )
 
         # ----------------------------------------------------
@@ -901,107 +500,55 @@ class MambaTransformer(nn.Module):
             n_classes=n_classes
         )
 
-        # ----------------------------------------------------
-        # Residual scale
-        #
-        # NO lo hacemos extremadamente pequeño.
-        #
-        # 0.1 permite que el prior sea importante al inicio
-        # pero que Mamba pueda aprender una corrección.
-        # ----------------------------------------------------
-
+        # Escala aprendible de la correccion residual.
         self.residual_scale = nn.Parameter(
             torch.tensor(0.1)
         )
 
         self._initialize_weights()
 
-    # ========================================================
-    # INITIALIZATION
-    # ========================================================
-
     def _initialize_weights(self):
-
         for module in self.modules():
-
-            if isinstance(
-                module,
-                nn.Linear
-            ):
-
+            if isinstance(module, nn.Linear):
                 if module.weight is not None:
-
                     nn.init.xavier_uniform_(
                         module.weight,
                         gain=0.5
                     )
 
                 if module.bias is not None:
-
-                    nn.init.zeros_(
-                        module.bias
-                    )
+                    nn.init.zeros_(module.bias)
 
     # ========================================================
-    # PREPARE ABUNDANCES
+    # NORMALIZAR ABUNDANCIAS
     # ========================================================
 
-    def _prepare_base_abundances(
-        self,
-        x
-    ):
+    def _prepare_base_abundances(self, x):
         """
-        Convierte los canales de entrada en una distribución
-        composicional por píxel.
+        Normaliza los canales de abundancia por pixel.
 
-        x >= 0
+        Entrada: (B, N, H, W)
+        Salida:  (B, N, H, W)
 
-        base_abundances =
-            x / sum(x)
+        Los valores negativos se recortan a cero.
+        Un pixel con suma cero queda como vector de ceros.
         """
 
-        if torch.isnan(x).any():
-
+        if not torch.isfinite(x).all():
             raise ValueError(
-                "La entrada contiene NaN"
+                "La entrada contiene NaN o Inf."
             )
 
-        if torch.isinf(x).any():
+        nonnegative = torch.clamp(x, min=0.0)
 
-            raise ValueError(
-                "La entrada contiene Inf"
-            )
-
-        # ----------------------------------------------------
-        # Abundancias no negativas
-        # ----------------------------------------------------
-
-        x = torch.clamp(
-            x,
-            min=0.0
-        )
-
-        # ----------------------------------------------------
-        # Suma por píxel
-        # ----------------------------------------------------
-
-        abundance_sum = torch.sum(
-            x,
+        abundance_sum = nonnegative.sum(
             dim=1,
             keepdim=True
         )
 
-        abundance_sum = torch.clamp(
-            abundance_sum,
-            min=1e-8
-        )
-
-        # ----------------------------------------------------
-        # Normalización composicional
-        # ----------------------------------------------------
-
         base_abundances = (
-            x / abundance_sum
+            nonnegative
+            / abundance_sum.clamp_min(1e-8)
         )
 
         return base_abundances
@@ -1010,217 +557,118 @@ class MambaTransformer(nn.Module):
     # FORWARD
     # ========================================================
 
-    def forward(
-        self,
-        x
-    ):
-
+    def forward(self, x):
         # ----------------------------------------------------
-        # Input validation
+        # Validacion de entrada
         # ----------------------------------------------------
 
         if x.ndim != 4:
-
             raise ValueError(
-                f"Se esperaba "
-                f"(B,C,H,W), recibido {x.shape}"
+                f"Se esperaba (B,C,H,W); recibido {tuple(x.shape)}."
             )
 
         if x.shape[1] != self.n_endmembers:
-
             raise ValueError(
-                f"Se esperaban "
-                f"{self.n_endmembers} canales, "
-                f"recibidos {x.shape[1]}"
+                f"Se esperaban {self.n_endmembers} canales; "
+                f"se recibieron {x.shape[1]}."
             )
 
         if x.shape[2] != self.image_size:
-
             raise ValueError(
-                f"Altura incorrecta: "
-                f"{x.shape[2]}"
+                f"Altura incorrecta: {x.shape[2]}."
             )
 
         if x.shape[3] != self.image_size:
-
             raise ValueError(
-                f"Anchura incorrecta: "
-                f"{x.shape[3]}"
+                f"Anchura incorrecta: {x.shape[3]}."
             )
 
         # ====================================================
-        # ABUNDANCE PRIOR
+        # ABUNDANCIAS BASE OBLIGATORIAS
         # ====================================================
 
-        if self.use_abundance_prior:
-
-            base_abundances = (
-                self._prepare_base_abundances(
-                    x
-                )
-            )
-
-        else:
-
-            base_abundances = None
+        base_abundances = self._prepare_base_abundances(x)
 
         # ====================================================
         # PATCH EMBEDDING
         # ====================================================
 
-        x = self.patch_embed(
-            x
-        )
+        features = self.patch_embed(x)
 
-        # ====================================================
-        # FEATURE MAP
-        # ====================================================
-
-        B, C, H, W = x.shape
+        batch_size, channels, height, width = features.shape
 
         # ====================================================
         # FEATURE MAP -> TOKENS
         # ====================================================
 
-        x = x.flatten(
-            2
-        )
-
-        x = x.transpose(
-            1,
-            2
-        )
-
-        # Ahora:
-
-        # (B, 64, 128)
+        tokens = features.flatten(2).transpose(1, 2)
 
         # ====================================================
         # POSITIONAL EMBEDDING
         # ====================================================
 
-        x = self.positional_embedding(
-            x
-        )
+        tokens = self.positional_embedding(tokens)
 
         # ====================================================
         # MAMBA
         # ====================================================
 
-        x = self.mamba(
-            x
-        )
+        tokens = self.mamba(tokens)
 
         # ====================================================
         # TOKENS -> FEATURE MAP
         # ====================================================
 
-        x = x.transpose(
-            1,
-            2
-        )
-
-        x = x.reshape(
-            B,
-            C,
-            H,
-            W
+        features = tokens.transpose(1, 2).reshape(
+            batch_size,
+            channels,
+            height,
+            width
         )
 
         # ====================================================
-        # DECODER
+        # CORRECCION APRENDIDA
         # ====================================================
 
-        delta_logits = self.decoder(
-            x
+        delta_logits = self.decoder(features)
+        delta_logits = self.residual_scale * delta_logits
+
+        # ====================================================
+        # CONEXION RESIDUAL OBLIGATORIA
+        # ====================================================
+
+        base_logits = torch.log(
+            base_abundances + 1e-8
         )
 
-        # ====================================================
-        # RESIDUAL SCALE
-        # ====================================================
-
-        delta_logits = (
-            self.residual_scale
-            * delta_logits
-        )
+        logits = base_logits + delta_logits
 
         # ====================================================
-        # ABUNDANCE PRIOR
+        # VALIDACION DE SALIDA
         # ====================================================
 
-        if self.use_abundance_prior:
-
-            base_logits = torch.log(
-                base_abundances
-                + 1e-8
-            )
-
-            logits = (
-                base_logits
-                + delta_logits
-            )
-
-        else:
-
-            logits = delta_logits
-
-        # ====================================================
-        # SANITY CHECK
-        # ====================================================
-
-        if torch.isnan(logits).any():
-
+        if not torch.isfinite(logits).all():
             raise RuntimeError(
-                "MambaTransformer produjo NaN"
-            )
-
-        if torch.isinf(logits).any():
-
-            raise RuntimeError(
-                "MambaTransformer produjo Inf"
+                "MambaTransformer produjo NaN o Inf."
             )
 
         return logits
 
     # ========================================================
-    # PREDICT ABUNDANCES
+    # PREDICCION DE ABUNDANCIAS
     # ========================================================
 
-    def predict_abundances(
-        self,
-        x
-    ):
-
-        logits = self.forward(
-            x
-        )
-
-        abundances = torch.softmax(
-            logits,
-            dim=1
-        )
-
-        return abundances
+    def predict_abundances(self, x):
+        logits = self.forward(x)
+        return torch.softmax(logits, dim=1)
 
     # ========================================================
-    # PREDICT CLASS
+    # PREDICCION DE CLASE
     # ========================================================
 
-    def predict(
-        self,
-        x
-    ):
-
-        logits = self.forward(
-            x
-        )
-
-        prediction = torch.argmax(
-            logits,
-            dim=1
-        )
-
-        return prediction
+    def predict(self, x):
+        logits = self.forward(x)
+        return torch.argmax(logits, dim=1)
 
 
 # ============================================================
@@ -1232,109 +680,43 @@ def create_model(
     n_classes=8,
     device=None
 ):
-
     if device is None:
-
         device = get_device()
 
     print()
     print("=" * 70)
     print("MAMBA TRANSFORMER")
     print("=" * 70)
-
-    print(
-        "Implementation: PyTorch Selective SSM"
-    )
-
-    print(
-        "Official mamba-ssm: NO"
-    )
-
-    print(
-        "CUDA dependency: NO"
-    )
-
-    print(
-        "Device:",
-        device
-    )
-
-    # --------------------------------------------------------
-    # Modelo
-    # --------------------------------------------------------
+    print("Implementation: PyTorch Selective SSM")
+    print("Official mamba-ssm: NO")
+    print("CUDA dependency: NO")
+    print("Device:", device)
+    print("Mandatory abundance residual: YES")
 
     model = MambaTransformer(
-
         n_endmembers=n_endmembers,
-
         n_classes=n_classes,
-
         image_size=32,
-
         embed_dim=128,
-
         patch_size=4,
-
         depth=3,
-
         state_dim=16,
-
         dt_rank=8,
-
-        dropout=0.1,
-
-        use_abundance_prior=True
-    )
-
-    model = model.to(
-        device
-    )
-
-    # --------------------------------------------------------
-    # Parameters
-    # --------------------------------------------------------
+        dropout=0.1
+    ).to(device)
 
     n_params = sum(
-        p.numel()
-        for p in model.parameters()
-        if p.requires_grad
+        parameter.numel()
+        for parameter in model.parameters()
+        if parameter.requires_grad
     )
 
-    print(
-        "Trainable parameters:",
-        f"{n_params:,}"
-    )
-
-    print(
-        "Tokens:",
-        model.num_tokens
-    )
-
-    print(
-        "Patch size:",
-        model.patch_size
-    )
-
-    print(
-        "Embedding dimension:",
-        model.embed_dim
-    )
-
-    print(
-        "Mamba depth:",
-        3
-    )
-
-    print(
-        "SSM state dimension:",
-        16
-    )
-
-    print(
-        "Abundance prior:",
-        model.use_abundance_prior
-    )
-
+    print("Trainable parameters:", f"{n_params:,}")
+    print("Tokens:", model.num_tokens)
+    print("Patch size:", model.patch_size)
+    print("Embedding dimension:", model.embed_dim)
+    print("Mamba depth:", len(model.mamba.blocks))
+    print("SSM state dimension:", 16)
     print("=" * 70)
     print()
 
@@ -1351,37 +733,20 @@ def test_model(
     batch_size=2,
     device=None
 ):
-
     if device is None:
-
         device = get_device()
 
     print()
     print("=" * 70)
     print("TEST MAMBA TRANSFORMER")
     print("=" * 70)
-
-    print(
-        "Device:",
-        device
-    )
-
-    # --------------------------------------------------------
-    # Crear modelo
-    # --------------------------------------------------------
+    print("Device:", device)
 
     model = create_model(
         n_endmembers=n_endmembers,
         n_classes=n_classes,
         device=device
     )
-
-    # --------------------------------------------------------
-    # Entrada
-    #
-    # Usamos rand y no randn porque las abundancias deben
-    # ser no negativas.
-    # --------------------------------------------------------
 
     x = torch.rand(
         batch_size,
@@ -1391,247 +756,100 @@ def test_model(
         device=device
     )
 
-    # --------------------------------------------------------
-    # Forward
-    # --------------------------------------------------------
-
     model.eval()
 
     with torch.no_grad():
+        logits = model(x)
+        abundances = model.predict_abundances(x)
+        prediction = model.predict(x)
+        base_abundances = model._prepare_base_abundances(x)
 
-        logits = model(
-            x
-        )
-
-        abundances = (
-            model.predict_abundances(
-                x
-            )
-        )
-
-        prediction = model.predict(
-            x
-        )
-
-    # ========================================================
-    # SHAPES
-    # ========================================================
-
-    print()
-    print("Input:")
-    print(
-        "   ",
-        tuple(x.shape)
-    )
+    print("Input:", tuple(x.shape))
+    print("Logits:", tuple(logits.shape))
+    print("Abundances:", tuple(abundances.shape))
+    print("Prediction:", tuple(prediction.shape))
 
     print()
     print("Logits:")
-    print(
-        "   ",
-        tuple(logits.shape)
-    )
+    print("  min:", logits.min().item())
+    print("  max:", logits.max().item())
+    print("  mean:", logits.mean().item())
+    print("  std:", logits.std().item())
+
+    abundance_sum = abundances.sum(dim=1)
 
     print()
-    print("Abundances:")
-    print(
-        "   ",
-        tuple(abundances.shape)
-    )
+    print("Predicted abundance sum:")
+    print("  min:", abundance_sum.min().item())
+    print("  max:", abundance_sum.max().item())
+    print("  mean:", abundance_sum.mean().item())
 
-    print()
-    print("Prediction:")
-    print(
-        "   ",
-        tuple(prediction.shape)
-    )
-
-    # ========================================================
-    # STATISTICS
-    # ========================================================
-
-    print()
-    print("Logits statistics:")
-
-    print(
-        "   min :",
-        logits.min().item()
-    )
-
-    print(
-        "   max :",
-        logits.max().item()
-    )
-
-    print(
-        "   mean:",
-        logits.mean().item()
-    )
-
-    print(
-        "   std :",
-        logits.std().item()
-    )
-
-    # ========================================================
-    # ABUNDANCE SUM
-    # ========================================================
-
-    abundance_sum = (
-        abundances.sum(
-            dim=1
-        )
-    )
-
-    print()
-    print(
-        "Abundance sum statistics:"
-    )
-
-    print(
-        "   min:",
-        abundance_sum.min().item()
-    )
-
-    print(
-        "   max:",
-        abundance_sum.max().item()
-    )
-
-    print(
-        "   mean:",
-        abundance_sum.mean().item()
-    )
-
-    # ========================================================
-    # PREDICTED CLASSES
-    # ========================================================
-
-    unique_classes = torch.unique(
-        prediction
-    )
-
-    print()
-    print(
-        "Classes predicted:"
-    )
-
-    print(
-        "   ",
-        unique_classes.detach().cpu().tolist()
-    )
-
-    # ========================================================
-    # ASSERTIONS
-    # ========================================================
-
-    assert x.shape == (
-        batch_size,
-        n_endmembers,
-        32,
-        32
-    )
+    print("Classes predicted:", torch.unique(prediction).cpu().tolist())
 
     assert logits.shape == (
-        batch_size,
-        n_classes,
-        32,
-        32
+        batch_size, n_classes, 32, 32
     )
 
     assert abundances.shape == (
-        batch_size,
-        n_classes,
-        32,
-        32
+        batch_size, n_classes, 32, 32
     )
 
     assert prediction.shape == (
-        batch_size,
-        32,
-        32
+        batch_size, 32, 32
     )
-
-    # --------------------------------------------------------
-    # Sum-to-one
-    # --------------------------------------------------------
 
     assert torch.allclose(
         abundance_sum,
-        torch.ones_like(
-            abundance_sum
-        ),
+        torch.ones_like(abundance_sum),
         atol=1e-5
     )
 
-    # --------------------------------------------------------
-    # NaN
-    # --------------------------------------------------------
+    assert torch.isfinite(logits).all()
+    assert torch.isfinite(abundances).all()
 
-    assert not torch.isnan(
-        logits
-    ).any()
+    base_sum = base_abundances.sum(dim=1)
+    nonzero_pixels = base_sum > 0
 
-    assert not torch.isnan(
-        abundances
-    ).any()
-
-    # --------------------------------------------------------
-    # Inf
-    # --------------------------------------------------------
-
-    assert not torch.isinf(
-        logits
-    ).any()
-
-    assert not torch.isinf(
-        abundances
-    ).any()
-
-    # ========================================================
-    # RESULT
-    # ========================================================
+    if nonzero_pixels.any():
+        assert torch.allclose(
+            base_sum[nonzero_pixels],
+            torch.ones_like(base_sum[nonzero_pixels]),
+            atol=1e-5
+        )
 
     print()
-    print("✓ Input correcto")
-    print("✓ Patch embedding correcto")
-    print("✓ Selective SSM correcto")
-    print("✓ Mamba blocks correctos")
-    print("✓ Decoder correcto")
-    print("✓ Logits correctos")
-    print("✓ Softmax correcto")
-    print("✓ Sum-to-one correcto")
-    print("✓ No NaN")
-    print("✓ No Inf")
     print("✓ Dimensiones correctas")
-    print()
+    print("✓ Conexion residual de abundancias activa")
+    print("✓ Softmax correcto")
+    print("✓ Suma de probabilidades igual a uno")
+    print("✓ No hay NaN ni Inf")
     print("TEST COMPLETADO")
     print("=" * 70)
     print()
 
-    return (
-        model,
-        x,
-        logits,
-        abundances,
-        prediction
-    )
+    return model, x, logits, abundances, prediction
 
 
 # ============================================================
-# 12. TEST DE PROPORCIONES
+# 12. TEST DE CONEXION RESIDUAL DE ABUNDANCIAS
 # ============================================================
 
-def test_abundance_prior(
-    device=None
-):
+def test_abundance_prior(device=None):
+    """
+    Verifica que las abundancias se normalizan correctamente
+    y que el modelo produce logits finitos con la conexion
+    residual obligatoria.
+
+    Este test NO exige que la prediccion coincida exactamente
+    con las abundancias de entrada: el decoder puede corregirlas.
+    """
 
     if device is None:
-
         device = get_device()
 
     print()
     print("=" * 70)
-    print("TEST DEL ABUNDANCE PRIOR")
+    print("TEST DE CONEXION RESIDUAL OBLIGATORIA")
     print("=" * 70)
 
     model = create_model(
@@ -1642,122 +860,58 @@ def test_abundance_prior(
 
     model.eval()
 
-    # --------------------------------------------------------
-    # Crear abundancias controladas
-    # --------------------------------------------------------
-
     x = torch.zeros(
-        1,
-        8,
-        32,
-        32,
+        1, 8, 32, 32,
         device=device
     )
 
-    # Clase/endmember 0 dominante
+    proportions = torch.tensor(
+        [0.80, 0.10, 0.05, 0.03, 0.01, 0.005, 0.003, 0.002],
+        device=device
+    ).view(1, 8, 1, 1)
 
-    x[:, 0] = 0.80
-
-    # Endmember 1 moderado
-
-    x[:, 1] = 0.10
-
-    # Endmember 2 pequeño
-
-    x[:, 2] = 0.05
-
-    # Endmember 3 pequeño
-
-    x[:, 3] = 0.03
-
-    # Endmember 4
-
-    x[:, 4] = 0.01
-
-    # Endmember 5
-
-    x[:, 5] = 0.005
-
-    # Endmember 6
-
-    x[:, 6] = 0.003
-
-    # Endmember 7
-
-    x[:, 7] = 0.002
+    x[:] = proportions
 
     with torch.no_grad():
+        base_abundances = model._prepare_base_abundances(x)
+        logits = model(x)
+        predicted = torch.softmax(logits, dim=1)
 
-        base_abundances = (
-            model._prepare_base_abundances(
-                x
-            )
-        )
-
-        predicted = (
-            model.predict_abundances(
-                x
-            )
-        )
-
-    print()
+    print("Base abundances:")
     print(
-        "Abundancias base:"
+        base_abundances[0, :, 16, 16].cpu().numpy()
     )
 
+    print("Predicted probabilities:")
     print(
-        base_abundances[
-            0,
-            :,
-            16,
-            16
-        ]
-        .detach()
-        .cpu()
-        .numpy()
+        predicted[0, :, 16, 16].cpu().numpy()
+    )
+
+    assert torch.isfinite(logits).all()
+    assert torch.isfinite(predicted).all()
+
+    assert torch.allclose(
+        base_abundances.sum(dim=1),
+        torch.ones_like(base_abundances[:, 0]),
+        atol=1e-5
     )
 
     print()
-    print(
-        "Abundancias predichas:"
-    )
-
-    print(
-        predicted[
-            0,
-            :,
-            16,
-            16
-        ]
-        .detach()
-        .cpu()
-        .numpy()
-    )
-
-    print()
-    print(
-        "✓ Test de proporciones completado"
-    )
-
+    print("✓ Abundancias base normalizadas")
+    print("✓ Conexión residual obligatoria ejecutada")
+    print("✓ Logits y probabilidades finitos")
     print("=" * 70)
     print()
 
-    return (
-        base_abundances,
-        predicted
-    )
+    return base_abundances, predicted
 
 
 # ============================================================
 # 13. TEST DE BACKWARD
 # ============================================================
 
-def test_backward(
-    device=None
-):
-
+def test_backward(device=None):
     if device is None:
-
         device = get_device()
 
     print()
@@ -1773,132 +927,55 @@ def test_backward(
 
     model.train()
 
-    # --------------------------------------------------------
-    # Input
-    # --------------------------------------------------------
-
-    x = torch.rand(
-        2,
-        8,
-        32,
-        32,
-        device=device
-    )
-
-    # --------------------------------------------------------
-    # Target
-    #
-    # Clasificación por píxel.
-    # --------------------------------------------------------
+    x = torch.rand(2, 8, 32, 32, device=device)
 
     target = torch.randint(
         0,
         8,
-        (
-            2,
-            32,
-            32
-        ),
+        (2, 32, 32),
         device=device
     )
 
-    # --------------------------------------------------------
-    # Forward
-    # --------------------------------------------------------
+    logits = model(x)
+    loss = F.cross_entropy(logits, target)
 
-    logits = model(
-        x
-    )
-
-    # --------------------------------------------------------
-    # Loss
-    # --------------------------------------------------------
-
-    loss = F.cross_entropy(
-        logits,
-        target
-    )
-
-    print()
-    print(
-        "Loss:",
-        loss.item()
-    )
-
-    # --------------------------------------------------------
-    # Backward
-    # --------------------------------------------------------
+    print("Loss:", loss.item())
 
     loss.backward()
 
-    # --------------------------------------------------------
-    # Gradient check
-    # --------------------------------------------------------
-
     gradients_found = 0
-
     gradients_nan = 0
-
     gradients_inf = 0
 
     for parameter in model.parameters():
-
         if parameter.grad is None:
-
             continue
 
         gradients_found += 1
 
-        if torch.isnan(
-            parameter.grad
-        ).any():
-
+        if torch.isnan(parameter.grad).any():
             gradients_nan += 1
 
-        if torch.isinf(
-            parameter.grad
-        ).any():
-
+        if torch.isinf(parameter.grad).any():
             gradients_inf += 1
 
-    print(
-        "Parámetros con gradiente:",
-        gradients_found
-    )
-
-    print(
-        "Gradientes NaN:",
-        gradients_nan
-    )
-
-    print(
-        "Gradientes Inf:",
-        gradients_inf
-    )
+    print("Parameters with gradients:", gradients_found)
+    print("Gradients NaN:", gradients_nan)
+    print("Gradients Inf:", gradients_inf)
 
     assert gradients_found > 0
-
     assert gradients_nan == 0
-
     assert gradients_inf == 0
 
+    assert model.residual_scale.grad is not None
+    assert torch.isfinite(model.residual_scale.grad).all()
+
     print()
-    print(
-        "✓ Forward correcto"
-    )
-
-    print(
-        "✓ Loss correcta"
-    )
-
-    print(
-        "✓ Backward correcto"
-    )
-
-    print(
-        "✓ Gradientes válidos"
-    )
-
+    print("✓ Forward correcto")
+    print("✓ Loss calculada")
+    print("✓ Backward correcto")
+    print("✓ Gradientes válidos")
+    print("✓ residual_scale recibe gradiente")
     print("=" * 70)
     print()
 
@@ -1910,40 +987,16 @@ def test_backward(
 # ============================================================
 
 if __name__ == "__main__":
-
     print()
     print("#" * 70)
     print("# MAMBA TRANSFORMER")
     print("# SELECTIVE SSM - PYTORCH PURO")
-    print("#")
-
-    print(
-        "# CUDA:",
-        torch.cuda.is_available()
-    )
-
-    print(
-        "# MPS:",
-        torch.backends.mps.is_available()
-    )
-
+    print("# CUDA:", torch.cuda.is_available())
+    print("# MPS:", torch.backends.mps.is_available())
     print("#" * 70)
 
-    # --------------------------------------------------------
-    # Device
-    # --------------------------------------------------------
-
     device = get_device()
-
-    print()
-    print(
-        ">>> Device seleccionado:",
-        device
-    )
-
-    # --------------------------------------------------------
-    # Test principal
-    # --------------------------------------------------------
+    print("Device seleccionado:", device)
 
     test_model(
         n_endmembers=8,
@@ -1952,28 +1005,10 @@ if __name__ == "__main__":
         device=device
     )
 
-    # --------------------------------------------------------
-    # Test abundance prior
-    # --------------------------------------------------------
-
-    test_abundance_prior(
-        device=device
-    )
-
-    # --------------------------------------------------------
-    # Test backward
-    # --------------------------------------------------------
-
-    test_backward(
-        device=device
-    )
-
-    # --------------------------------------------------------
-    # Final
-    # --------------------------------------------------------
+    test_abundance_prior(device=device)
+    test_backward(device=device)
 
     print()
     print("#" * 70)
     print("# TODOS LOS TESTS TERMINADOS")
     print("#" * 70)
-    print()
