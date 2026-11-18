@@ -10,11 +10,13 @@ El proyecto cuenta actualmente con tres scripts principales de ejecución depend
 
 *   **1. La aplicación principal (`main.py`):** 
     Pensado para la experimentación modular de desmezcla hiperespectral. Carga de manera dinámica las configuraciones desde `config.yaml`, permitiéndo cambiar libremente entre distintos métodos de desmezclado (`ebeae`, `nebeae`, `ebeae_semisupervisado`) y posteriormente seleccionar entre múltiples arquitecturas de atención / transformers(`model_builder`)  .
-*   **2. El Piloto de Consenso Global (`pilot_pglobal_abundance.py`):** 
-    Enfoque especializado para la estrategia avanzada del proyecto. Construye un diccionario de endmembers global de consenso (`P_global`) a partir de las 7 escenas de entrenamiento, proyecta los datos sobre un símplex invariante usando la versión semisupervisada (`ebeae_s`), añade un 9.º canal con la norma radiométrica y ejecuta una evaluación multieescena robusta (entrenando y validando para arrojar métricas detalladas por escena y globales).
-*   **3. Benchmark Multi-Arquitectura (main_multi.py):** 
-	Script de evaluación masiva para comparar el rendimiento de las 5 arquitecturas del proyecto (resunet, abundance, residual, cross_attention, mamba). Procesa el flujo de entrenamiento secuencialmente, genera reportes detallados en JSON, matrices de confusión y consolida los resultados en una tabla CSV global.
-    
+- **2. El Piloto de Consenso Global (`run_pilot.py`):** 
+  Enfoque especializado para la estrategia avanzada del proyecto. Construye un diccionario de endmembers global de consenso (`P_global`) a partir de las 7 escenas de entrenamiento, proyecta los datos sobre un símplex invariante usando la versión semisupervisada (`ebeae_s`), añade un 9.º canal con la norma radiométrica y ejecuta una evaluación multieescena robusta (entrenando y validando para arrojar métricas detalladas por escena y globales).
+
+- **3. Benchmark Multi-Arquitectura (`run_benchmark.py`):** 
+  Script de evaluación masiva para comparar el rendimiento de las 5 arquitecturas del proyecto (`resunet`, `abundance`, `residual`, `cross_attention`, `mamba`). Procesa el flujo de entrenamiento secuencialmente, genera reportes detallados en JSON, matrices de confusión y consolida los resultados en una tabla CSV global.
+- **4. Evaluación de Escenas de Test (`run_eval.py`):** 
+  Script dedicado a evaluar los checkpoints ya entrenados (generados por los orquestadores) sobre las 3 escenas de prueba reservadas (`201912_8`, `201912_9`, `201912_10`). Calcula métricas detalladas en tres modos clave (con Clase 0 completa, sin Clase 0 directa, y sin Clase 0 enmascarada) tanto por escena individual como de forma global combinada, exportando los resultados a una tabla CSV consolidada.
 
 ## 📁 Estructura del Proyecto
 
