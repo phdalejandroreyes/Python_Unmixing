@@ -4,6 +4,17 @@ Proyecto de investigación y desarrollo centrado en el desmezclado de imágenes 
 
 ---
 
+## ⚙️ Orquestadores del Pipeline: Main vs. Pruebas Experimentales
+
+El proyecto cuenta actualmente con dos scripts principales de ejecución dependiendo del objetivo de la investigación:
+
+*   **1. El Orquestador Genérico (`main.py`):** 
+    Pensado para la experimentación modular. Carga de manera dinámica las configuraciones desde `config.yaml`, permitiéndote cambiar libremente entre múltiples arquitecturas de red (`model_builder`) y distintos métodos de desmezclado tradicional (`ebeae`, `nebeae`, `fcls`).
+*   **2. El Piloto de Consenso Global (`pilot_pglobal_abundance.py`):** 
+    Enfoque especializado para la estrategia avanzada del proyecto. Construye un diccionario de endmembers global de consenso (`P_global`) a partir de las 7 escenas de entrenamiento, proyecta los datos sobre un símplex invariante usando la versión semisupervisada (`ebeae_s`), añade un 9.º canal con la norma radiométrica y ejecuta una evaluación multieescena robusta (entrenando y validando para arrojar métricas detalladas por escena y globales).
+    
+    
+
 ## 📁 Estructura del Proyecto
 
 ```text
@@ -15,8 +26,13 @@ Python_unmixing/
 ├── training.py                         # Bucle de entrenamiento, validación y métricas intermedias
 │
 ├── Satelital/                          # Imágenes hiperespectrales descargables desdeel drive: ______
+<<<<<<< HEAD
 │   ├── images                          # Imágenes hiperespectrales
 │   └── labels                          # Etiquetas semánticas
+=======
+│   ├── images                	# Imágenes hiperespectrales
+│   └── labels                      	# Etiquetas semánticas
+>>>>>>> 3e2e3ba (docs: actualizar README con la sección intermedia explicando los dos orquestadores (main y piloto global))
 │
 ├── Models/                             # Arquitecturas de Aprendizaje Profundo (Comparativa de investigación)
 │   ├── model_builder.py                # Builder central (create_model) para selección dinámica
