@@ -8,12 +8,15 @@ Proyecto de investigación y desarrollo centrado en el desmezclado de imágenes 
 
 ```text
 Python_unmixing/
-├── Satelital/                          # Imágenes hiperespectrales y Ground Truth (GT)
 ├── main.py                             # Script principal de ejecución del pipeline
 ├── config.py                           # Carga y gestión de parámetros (config.yaml)
 ├── dataset.py                          # Extracción de parches 32x32 y PyTorch Dataloaders
 ├── losses.py                           # Funciones de pérdida (Focal Loss, entre otras)
 ├── training.py                         # Bucle de entrenamiento, validación y métricas intermedias
+│
+├── Satelital/                          # Imágenes hiperespectrales descargables desdeel drive: ______
+│   ├── images                # Imágenes hiperespectrales
+│   └── labels                      # Etiquetas semánticas
 │
 ├── Models/                             # Arquitecturas de Aprendizaje Profundo (Comparativa de investigación)
 │   ├── model_builder.py                # Builder central (create_model) para selección dinámica
@@ -26,6 +29,7 @@ Python_unmixing/
 ├── unmixing/                           # Algoritmos tradicionales y preprocesamiento
 │   ├── ebeae.py                        # Desmezclado lineal ciego
 │   ├── nebeae.py                       # Desmezclado no lineal ciego
+│   ├── ebeae_s.py                        # Desmezclado lineal semisupervisado al 20 porciento
 │   ├── generate_pseudo_gt.py           # Generación de referencia Pseudo-GT
 │   └── endmember_extraction.py         # Inicializaciones (VCA, N-FINDR, SVMAX)
 │
