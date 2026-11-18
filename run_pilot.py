@@ -37,10 +37,15 @@ from losses import get_loss_function
 from Models.abundance_transformer import AbundanceTransformer
 
 
+# Definición limpia en Python basada en tu convención de nombres y carpetas
+test_scene_ids = ["8", "9", "10"]
 TEST_SCENES = [
-    ("201912_8", Path("Satelital/images/201912_8.tif"), Path("Satelital/labels/201912_8.tif")),
-    ("201912_9", Path("Satelital/images/201912_9.tif"), Path("Satelital/labels/201912_9.tif")),
-    ("201912_10", Path("Satelital/images/201912_10.tif"), Path("Satelital/labels/201912_10.tif")),
+    (
+        f"201912_{sid}",
+        Path(f"Satelital/images/201912_{sid}.tif"),
+        Path(f"Satelital/labels/201912_{sid}.tif")
+    )
+    for sid in test_scene_ids
 ]
 
 

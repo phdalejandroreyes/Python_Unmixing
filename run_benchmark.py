@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+
 """
 =============================================================================
 main_multi.py
 
 Descripción:
-    Benchmark automatizado multi-arquitectura para clasificación hiperespectral
-    basada en desmezclado (EBEAE_S).
-    - Usa exactamente la misma lógica de preprocesamiento, desmezclado,
-      calibración softmax, dataloaders con rotaciones (augment=True),
-      pesos suavizados y run_training_pipeline de main.py.
-    - Procesa las 7 escenas de entrenamiento y la escena de prueba UNA sola vez.
-    - Entrena secuencialmente las 5 arquitecturas configuradas en create_model:
-        1. resunet
-        2. abundancetransformer
-        3. residualtransformer
-        4. crossattention
-        5. mambatransformer
-    - Emite un anuncio claro de finalización con progreso porcentual (20% c/u).
-    - Guarda los checkpoints (.pth), métricas (.json) y tabla consolidada (.csv).
+    Benchmark automatizado multi-arquitectura (5 modelos) para clasificación
+    hiperespectral basada en desmezclado. Entrena secuencialmente:
+    1. resunet
+    2. abundancetransformer
+    3. residualtransformer
+    4. cross_attention
+    5. mambatransformer
+
+Notas técnicas y pendientes de alineación con el Piloto Global (pilot_pglobal):
+    - Actualmente calcula el desmezclado de forma adaptativa por escena y 
+      calibra las abundancias mediante softmax estándar.
+    - PENDIENTE DE ACTUALIZACIÓN: Para homologarlo con la estrategia del piloto, 
+      le falta construir e inyectar el diccionario de consenso global (P_global) 
+      fijo para todas las escenas, y concatenar el 9.º canal radiométrico 
+      (norma L2 con escala Median/IQR) en lugar de usar solo las 8 abundancias.
 =============================================================================
 """
+
 
 import os
 import csv
