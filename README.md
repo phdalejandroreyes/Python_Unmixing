@@ -15,8 +15,8 @@ Python_unmixing/
 ├── training.py                         # Bucle de entrenamiento, validación y métricas intermedias
 │
 ├── Satelital/                          # Imágenes hiperespectrales descargables desdeel drive: ______
-│   ├── images                # Imágenes hiperespectrales
-│   └── labels                      # Etiquetas semánticas
+│   ├── images                          # Imágenes hiperespectrales
+│   └── labels                          # Etiquetas semánticas
 │
 ├── Models/                             # Arquitecturas de Aprendizaje Profundo (Comparativa de investigación)
 │   ├── model_builder.py                # Builder central (create_model) para selección dinámica
