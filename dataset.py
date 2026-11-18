@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-class AbundanceDataset(Dataset):
+class HyperspectralPatchDataset(Dataset):
     def __init__(
         self,
         A_initial,
@@ -14,84 +14,90 @@ class AbundanceDataset(Dataset):
     ):
         self.patch_size = patch_size
         self.augment = augment
-        self.height, self.width = image_shape[0], image_shape[1]
+        self.patches_A = []
+        self.patches_labels = []
 
-        # Conversión a NumPy
-        if isinstance(A_initial, torch.Tensor):
-            A_initial = A_initial.detach().cpu().numpy()
-        A_initial = np.asarray(A_initial)
+        # Normalizar entradas a listas para manejar 1 o N imágenes
+        A_list = A_initial if isinstance(A_initial, list) else [A_initial]
+        labels_list = labels if isinstance(labels, list) else [labels]
+        shapes_list = image_shape if isinstance(image_shape, list) else [image_shape]
 
-        if isinstance(labels, torch.Tensor):
-            labels = labels.detach().cpu().numpy()
-        labels = np.asarray(labels)
+        if len(A_list) != len(labels_list) or len(A_list) != len(shapes_list):
+            raise ValueError("Las listas de A_initial, labels e image_shape deben tener la misma longitud.")
 
-        # Validaciones de dimensiones
-        if A_initial.ndim != 2:
-            raise ValueError(f"A_initial debe tener 2 dimensiones. Shape recibido: {A_initial.shape}")
+        # Extracción e independización de parches por cada imagen
+        for A_init, lbls, shape in zip(A_list, labels_list, shapes_list):
+            height, width = shape[0], shape[1]
 
-        n_endmembers, num_pixels = A_initial.shape
-        if num_pixels != self.height * self.width:
-            raise ValueError("El número de píxeles de A_initial no coincide con image_shape.")
+            if isinstance(A_init, torch.Tensor):
+                A_init = A_init.detach().cpu().numpy()
+            A_init = np.asarray(A_init)
 
-        self.n_endmembers = n_endmembers
-        labels = labels.reshape(-1)
+            if isinstance(lbls, torch.Tensor):
+                lbls = lbls.detach().cpu().numpy()
+            lbls = np.asarray(lbls)
 
-        if labels.size != self.height * self.width:
-            raise ValueError("El número de labels no coincide con image_shape.")
+            if A_init.ndim != 2:
+                raise ValueError(f"A_initial debe tener 2 dimensiones. Shape recibido: {A_init.shape}")
 
-        # Reshape a estructuras 2D/3D
-        A_grid = A_initial.reshape(n_endmembers, self.height, self.width)
-        labels_grid = labels.reshape(self.height, self.width)
+            n_endmembers, num_pixels = A_init.shape
+            if num_pixels != height * width:
+                raise ValueError("El número de píxeles de A_initial no coincide con image_shape.")
 
-        # Manejo flexible de bordes si la imagen no es divisible por patch_size
-        pad_h = (patch_size - (self.height % patch_size)) % patch_size
-        pad_w = (patch_size - (self.width % patch_size)) % patch_size
+            lbls = lbls.reshape(-1)
+            if lbls.size != height * width:
+                raise ValueError("El número de labels no coincide con image_shape.")
 
-        if pad_h > 0 or pad_w > 0:
-            self.A = np.pad(A_grid, ((0, 0), (0, pad_h), (0, pad_w)), mode='reflect')
-            self.labels = np.pad(labels_grid, ((0, pad_h), (0, pad_w)), mode='reflect')
-            self.padded_height = self.height + pad_h
-            self.padded_width = self.width + pad_w
-        else:
-            self.A = A_grid
-            self.labels = labels_grid
-            self.padded_height = self.height
-            self.padded_width = self.width
+            A_grid = A_init.reshape(n_endmembers, height, width)
+            labels_grid = lbls.reshape(height, width)
 
-        # Mapeo de parches no solapados
-        self.patch_coordinates = []
-        for row in range(0, self.padded_height, patch_size):
-            for col in range(0, self.padded_width, patch_size):
-                self.patch_coordinates.append((row, col))
+            # Manejo flexible de bordes por imagen
+            pad_h = (patch_size - (height % patch_size)) % patch_size
+            pad_w = (patch_size - (width % patch_size)) % patch_size
+
+            if pad_h > 0 or pad_w > 0:
+                A_padded = np.pad(A_grid, ((0, 0), (0, pad_h), (0, pad_w)), mode='reflect')
+                labels_padded = np.pad(labels_grid, ((0, pad_h), (0, pad_w)), mode='reflect')
+                padded_height = height + pad_h
+                padded_width = width + pad_w
+            else:
+                A_padded = A_grid
+                labels_padded = labels_grid
+                padded_height = height
+                padded_width = width
+
+            # Extraer y almacenar parches independientes
+            for row in range(0, padded_height, patch_size):
+                for col in range(0, padded_width, patch_size):
+                    A_patch = A_padded[:, row:row + patch_size, col:col + patch_size]
+                    label_patch = labels_padded[row:row + patch_size, col:col + patch_size]
+                    
+                    self.patches_A.append(A_patch)
+                    self.patches_labels.append(label_patch)
 
     def __len__(self):
-        return len(self.patch_coordinates)
+        return len(self.patches_A)
 
     def __getitem__(self, index):
-        row, col = self.patch_coordinates[index]
+        A_patch = self.patches_A[index]
+        label_patch = self.patches_labels[index]
 
-        # Extraer parches (N_EST, 32, 32) y (32, 32)
-        A_patch = self.A[:, row:row + self.patch_size, col:col + self.patch_size]
-        label_patch = self.labels[row:row + self.patch_size, col:col + self.patch_size]
-
-        # Conversión a tensores de PyTorch
         A_tensor = torch.from_numpy(A_patch).float()
         label_tensor = torch.from_numpy(label_patch).long()
 
-        # Aumento de datos espacial (solo activo si self.augment=True)
         if self.augment:
-            # 1. Rotación aleatoria en múltiplos de 90° (0°, 90°, 180°, 270°)
+            # 1. Rotación aleatoria en múltiplos de 90°
             k = torch.randint(0, 4, (1,)).item()
             if k > 0:
                 A_tensor = torch.rot90(A_tensor, k, dims=[1, 2])
                 label_tensor = torch.rot90(label_tensor, k, dims=[0, 1])
 
-            # 2. Volteo horizontal aleatorio (50% probabilidad)
+            # 2. Volteo horizontal
             if torch.rand(1).item() < 0.5:
                 A_tensor = torch.flip(A_tensor, dims=[2])
                 label_tensor = torch.flip(label_tensor, dims=[1])
 
-            # 3. Volteo vertical aleatorio (50% probabilidad)
+            # 3. Volteo vertical
             if torch.rand(1).item() < 0.5:
                 A_tensor = torch.flip(A_tensor, dims=[1])
                 label_tensor = torch.flip(label_tensor, dims=[0])
@@ -108,7 +114,8 @@ def create_dataloader(
     shuffle=True,
     augment=False
 ):
-    dataset = AbundanceDataset(
+    # Uso de la clase con el nuevo nombre
+    dataset = HyperspectralPatchDataset(
         A_initial=A_initial,
         labels=labels,
         image_shape=image_shape,

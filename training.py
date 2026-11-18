@@ -5,10 +5,26 @@
 # ============================================================
 
 import time
+import inspect
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, cohen_kappa_score, confusion_matrix
+
+
+def _forward_pass(model, patches, endmembers_tensor):
+    """
+    Función auxiliar para adaptar el pase forward dinámicamente según 
+    si el modelo requiere 1 o 2 entradas.
+    """
+    # Verificar cuántos argumentos requiere la función forward del modelo
+    sig = inspect.signature(model.forward)
+    num_params = len(sig.parameters)
+
+    if num_params >= 2:
+        return model(patches, endmembers_tensor)
+    else:
+        return model(patches)
 
 
 def train_epoch(model, dataloader, endmembers_tensor, criterion, optimizer, device):
@@ -20,7 +36,7 @@ def train_epoch(model, dataloader, endmembers_tensor, criterion, optimizer, devi
         labels = labels.to(device)
 
         optimizer.zero_grad()
-        logits = model(patches, endmembers_tensor)
+        logits = _forward_pass(model, patches, endmembers_tensor)
         loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
@@ -30,7 +46,7 @@ def train_epoch(model, dataloader, endmembers_tensor, criterion, optimizer, devi
     return running_loss / len(dataloader.dataset)
 
 
-def evaluate(model, dataloader, endmembers_tensor, device):
+def evaluate(model, dataloader, endmembers_tensor, device, ignore_index=-100):
     model.eval()
     all_preds = []
     all_targets = []
@@ -38,8 +54,8 @@ def evaluate(model, dataloader, endmembers_tensor, device):
     with torch.no_grad():
         for patches, labels in dataloader:
             patches = patches.to(device)
-            logits = model(patches, endmembers_tensor)
-            preds = torch.argmax(logits, dim=1)  # Shape: (B, 32, 32)
+            logits = _forward_pass(model, patches, endmembers_tensor)
+            preds = torch.argmax(logits, dim=1)
 
             all_preds.append(preds.cpu().numpy().reshape(-1))
             all_targets.append(labels.numpy().reshape(-1))
@@ -47,30 +63,41 @@ def evaluate(model, dataloader, endmembers_tensor, device):
     all_preds = np.concatenate(all_preds)
     all_targets = np.concatenate(all_targets)
 
-    oa = accuracy_score(all_targets, all_preds)
-    f1 = f1_score(all_targets, all_preds, average="macro")
-    kappa = cohen_kappa_score(all_targets, all_preds)
-    cm = confusion_matrix(all_targets, all_preds)
+    # Filtrado dinámico: Seleccionar solo píxeles distintos del ignore_index (-100)
+    valid_mask = all_targets != ignore_index
+    valid_preds = all_preds[valid_mask]
+    valid_targets = all_targets[valid_mask]
+
+    if len(valid_targets) == 0:
+        return 0.0, 0.0, 0.0, np.array([])
+
+    unique_labels = np.sort(np.unique(valid_targets))
+
+    oa = accuracy_score(valid_targets, valid_preds)
+    f1 = f1_score(valid_targets, valid_preds, labels=unique_labels, average="macro", zero_division=0)
+    kappa = cohen_kappa_score(valid_targets, valid_preds, labels=unique_labels)
+    cm = confusion_matrix(valid_targets, valid_preds, labels=unique_labels)
 
     return oa, f1, kappa, cm
+
+
 def run_training_pipeline(model, train_loader, test_loader, endmembers_tensor, epochs, lr, device, criterion=None):
-    # Si no se le pasa un criterio personalizado, usa CrossEntropyLoss estándar
     if criterion is None:
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    #optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
 
     print("\n" + "=" * 70)
-    print("INICIANDO ENTRENAMIENTO DEL TRANSFORMER")
+    print(f"INICIANDO ENTRENAMIENTO ({type(model).__name__}) - {epochs} ÉPOCAS")
     print("=" * 70)
 
     for epoch in range(1, epochs + 1):
         start_time = time.time()
         train_loss = train_epoch(model, train_loader, endmembers_tensor, criterion, optimizer, device)
         elapsed = time.time() - start_time
+
         if epoch % 10 == 0 or epoch == epochs:
-            print(f"Época [{epoch:02d}/{epochs:02d}] - Loss: {train_loss:.6f} - Tiempo: {elapsed:.2f}s")
+            print(f"Época [{epoch:03d}/{epochs:03d}] - Loss: {train_loss:.6f} | Tiempo: {elapsed:.2f}s")
 
     print("\n" + "=" * 70)
     print("EVALUACIÓN EN IMAGEN DE ENTRENAMIENTO (TRAIN)")

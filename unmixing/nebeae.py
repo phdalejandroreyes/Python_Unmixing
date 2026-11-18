@@ -78,7 +78,7 @@ def probanonlinear_fast(Z, Y, P, A):
     num = np.sum(T1 * T2, axis=0)
     den = np.sum(T2 * T2, axis=0)
 
-    den_safe = np.where(den == 0, 1e-12, den)
+    den_safe = np.where(np.abs(den) <= 1e-12, 1e-12, den)
     D = np.clip(num / den_safe, 0.0, 1.0)
     return np.nan_to_num(D, nan=0.0)
 
@@ -93,7 +93,6 @@ def abundance_vectorized(Z, Y, P, D, Lambda):
     N = P.shape[1]
     eps = 1e-12
 
-    # Matriz base P^T P con limpieza de finitud
     P_clean = np.nan_to_num(P, nan=0.0, posinf=0.0, neginf=0.0)
     Go = P_clean.T @ P_clean
     Go = np.nan_to_num(Go, nan=0.0, posinf=0.0, neginf=0.0)
@@ -104,24 +103,22 @@ def abundance_vectorized(Z, Y, P, D, Lambda):
     except np.linalg.LinAlgError:
         lmin = 0.0
 
-    G = Go - np.eye(N) * lmin * Lambda + 1e-8 * np.eye(N)
+    lmin_adj = abs(lmin) if lmin < 0 else 0.0
+    G = Go + np.eye(N) * (lmin_adj * Lambda + 1e-8)
 
     try:
         Gi = np.linalg.inv(G)
     except np.linalg.LinAlgError:
         Gi = np.linalg.pinv(G)
 
-    # Proyección lineal inicial
     B = P_clean.T @ Y
     A_unconstrained = Gi @ B
     A_unconstrained = np.nan_to_num(A_unconstrained, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Aplicar restricción de Suma a Uno (ASC)
     ones_N = np.ones((1, N))
     sum_A = ones_N @ A_unconstrained
     A = A_unconstrained / np.maximum(sum_A, eps)
 
-    # Proyección activa paralela para cumplir No Negatividad (ANC) y Suma a Uno
     for _ in range(5):
         A[A < 0] = 0.0
         sums = np.sum(A, axis=0, keepdims=True)
@@ -134,41 +131,40 @@ def abundance_vectorized(Z, Y, P, D, Lambda):
     return np.nan_to_num(A, nan=1.0 / N)
 
 
-def endmember_update_safe(Z, Y, Po_initial, P_current, A, D, rho):
+def endmember_update_safe(Y_raw, Y_norm, Po_initial, P_current, A, D, rho):
     """
-    Actualización de endmembers garantizando normas no nulas.
+    Actualización de endmembers en la escala normalizada consistente con P y A.
     """
     N, K = A.shape
-    L = Y.shape[0]
+    L = Y_norm.shape[0]
     eps = 1e-12
 
-    # Residual con el modelo no lineal de NEBEAE
+    # Residual en espacio normalizado Y_norm
     E = P_current @ A
-    Y_hat = (1.0 - D)[None, :] * E + D[None, :] * (E * Z)
-    residual = Y - Y_hat
+    Y_hat = (1.0 - D)[None, :] * E + D[None, :] * (E * Y_norm)
+    residual = Y_norm - Y_hat
 
-    # Gradiente de mínimos cuadrados
-    GradP = - (residual @ A.T) / K + rho * P_current
+    # Gradiente en la dirección exacta de mínimos cuadrados
+    weight = (1.0 - D)[None, :] + D[None, :] * Y_norm
+    GradP = (residual * weight) @ A.T / K - rho * (P_current - Po_initial)
     GradP = np.nan_to_num(GradP, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Paso de aprendizaje adaptativo suave
-    grad_norm = np.linalg.norm(GradP, 'fro') + eps
-    alpha = 0.0001 / grad_norm
+    # Paso de gradiente con cota superior estable
+    grad_norm = np.linalg.norm(GradP, 'fro')
+    alpha = 0.05 / (grad_norm + eps) if grad_norm > eps else 0.05
 
-    P_new = P_current - alpha * GradP
+    P_new = P_current + alpha * GradP
     P_new = np.nan_to_num(P_new, nan=0.0, posinf=0.0, neginf=0.0)
     P_new = np.maximum(P_new, 0.0)
 
-    # Normalización por columna (Suma a 1 por canal)
     col_sums = np.sum(P_new, axis=0, keepdims=True)
-    
-    # Si algún endmember colapsa o su norma es cero, se restaura a su valor inicial Po
     invalid_cols = (col_sums <= eps) | (~np.isfinite(col_sums))
     if np.any(invalid_cols):
         P_new[:, invalid_cols.ravel()] = Po_initial[:, invalid_cols.ravel()]
         col_sums = np.sum(P_new, axis=0, keepdims=True)
 
-    P = P_new / col_sums
+    col_sums_safe = np.where(col_sums <= eps, 1.0, col_sums)
+    P = P_new / col_sums_safe
     return np.nan_to_num(P, nan=1.0 / L)
 
 
@@ -195,7 +191,6 @@ def nebeae(Yo=[], N=2, parameters=[], Po=[], oae=0):
 
     L, K = Yo.shape
 
-    # Muestreo
     Kdown = int(np.round(K * (1 - downsampling)))
     Is = np.sort(np.random.choice(K, Kdown, replace=False))
 
@@ -221,7 +216,6 @@ def nebeae(Yo=[], N=2, parameters=[], Po=[], oae=0):
     Ji = []
     Dm = np.zeros(Kdown)
 
-    # Ciclo de optimización alternada
     while ((Jp - J) / Jp) >= epsilon and iter_count < maxiter and oae == 0:
         Am = abundance_vectorized(Y, Ym, P, Dm, Lambda)
         Dm = probanonlinear_fast(Y, Ym, P, Am)
@@ -231,7 +225,7 @@ def nebeae(Yo=[], N=2, parameters=[], Po=[], oae=0):
 
         Jp = J
         E = P @ Am
-        residual = Ym - ((1.0 - Dm)[np.newaxis, :] * E) - (Dm[np.newaxis, :] * (E * Y))
+        residual = Ym - ((1.0 - Dm)[np.newaxis, :] * E) - (Dm[np.newaxis, :] * (E * Ym))
         J = np.linalg.norm(residual, "fro")
         Ji.append((Jp - J) / Jp)
 
@@ -240,12 +234,21 @@ def nebeae(Yo=[], N=2, parameters=[], Po=[], oae=0):
             break
         iter_count += 1
 
-    # Inferencia de abundancias completas con restricciones activas (ANC & ASC)
     A = abundance_vectorized(Yo, Ymo, P, probanonlinear_fast(Yo, Ymo, P, np.ones((N, K)) / N), Lambda)
     D = probanonlinear_fast(Yo, Ymo, P, A)
 
     S = mYmo
     AA = A * mYmo
     Yh = (np.expand_dims(1.0 - D, axis=0) * (P @ AA) + np.expand_dims(D, axis=0) * ((P @ AA) * Yo))
+
+    P = np.nan_to_num(P, nan=1.0 / L, posinf=1.0 / L, neginf=0.0)
+    col_norms = np.linalg.norm(P, axis=0, keepdims=True)
+    zero_cols = (col_norms <= eps)
+    if np.any(zero_cols):
+        P[:, zero_cols.ravel()] = Po_normalized[:, zero_cols.ravel()]
+        col_norms = np.linalg.norm(P, axis=0, keepdims=True)
+    P = P / np.maximum(col_norms, eps)
+
+    A = np.nan_to_num(A, nan=1.0 / N, posinf=1.0 / N, neginf=0.0)
 
     return P, A, S, Yh, Ji

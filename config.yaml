@@ -1,33 +1,57 @@
-
 project:
   name: "Python_Unmixing"
 
 # Desmezclado espectral
 unmixing:
-  method: "ebeae"
+  method: "ebeae_s" #non-linear = nebeae, fcls
   n_endmembers: 7
   extra_class: true
 
 # Clasificación
 classification:
-  architecture: "residual"
+  architecture: "abundance"  # Arquitecturas: "mamba", "resunet", "cross_attention", "abundance", "residual"
   n_classes: 8
 
 # Entrenamiento
 training:
-  patch_size: 32
+  patch_size: 32           # Mejores resultados: 16 para RESUNET, 32 para MAMBA
   batch_size: 4
-  epochs: 100
+  epochs: 150              # Ampliado a 150 para la convergencia multi-imagen
   learning_rate: 0.001
 
 # Datos
 data:
   spectral_bands: 32
-  train_image: "Satelital/images/201912_1.tif"
-  train_labels: "Satelital/labels/201912_1.tif"
+  num_train_images: 7
+  train_images:
+    - "Satelital/images/201912_1.tif"
+    - "Satelital/images/201912_2.tif"
+    - "Satelital/images/201912_3.tif"
+    - "Satelital/images/201912_4.tif"
+    - "Satelital/images/201912_5.tif"
+    - "Satelital/images/201912_6.tif"
+    - "Satelital/images/201912_7.tif"
+  train_labels:
+    - "Satelital/labels/201912_1.tif"
+    - "Satelital/labels/201912_2.tif"
+    - "Satelital/labels/201912_3.tif"
+    - "Satelital/labels/201912_4.tif"
+    - "Satelital/labels/201912_5.tif"
+    - "Satelital/labels/201912_6.tif"
+    - "Satelital/labels/201912_7.tif"
   test_image: "Satelital/images/201912_9.tif"
   test_labels: "Satelital/labels/201912_9.tif"
 
 # Hardware
 hardware:
   device: "cpu"
+
+# Función de pérdida
+loss:
+  type: "focal_loss"    # Opciones: "ce", "wce", "focal_loss", "tversky", "focal_tversky"
+  use_weights: true        # Habilita/deshabilita los pesos atenuados globales
+  gamma: 1.0               # Para Focal Loss
+  alpha: 0.3               # Para Tversky (Penaliza FP)
+  beta: 0.7                # Para Tversky (Penaliza FN - Ayuda a clases pequeñas)
+  gamma_tversky: 1.33      # Para Focal Tversky
+  ignore_index: -100
